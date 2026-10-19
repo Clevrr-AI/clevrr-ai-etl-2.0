@@ -1,0 +1,82 @@
+# CI for clevrr-ai-etl-2.0 (plan 7.7, first part).
+#
+# Every push and pull request: uv sync --frozen -> ruff -> pyright -> import contracts ->
+# ETL rules -> docker build -> smoke test (`etl list`). Tests are local only (git ignores
+# tests/): run `uv run pytest` before you push.
+#
+# Deploy (plan 7.7), on main only and only when the repository variables GCP_WIF_PROVIDER,
+# GCP_CI_SERVICE_ACCOUNT and ETL_IMAGE are set (terraform output in infra/): push the image
+# tagged with the commit SHA (never `latest`), then move every job labelled app=clevrr-etl-v2
+# to it. Keyless: Workload Identity Federation, no service-account key.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  id-token: write
+env:
+  UV_VERSION: "0.12.19"
+jobs:
+  checks:
+    name: Lint, types, rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv python install
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyright
+      - run: uv run lint-imports
+      - run: uv run python scripts/check_rules.py
+  image:
+    name: Build image and smoke test
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: clevrr-etl-v2:ci
+      - name: Smoke test
+        run: docker run --rm clevrr-etl-v2:ci list
+  deploy:
+    name: Push image and update jobs
+    runs-on: ubuntu-latest
+    needs: image
+    if: github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != ''
+    env:
+      IMAGE: ${{ vars.ETL_IMAGE }}
+      REGION: asia-south1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker "${IMAGE%%/*}" --quiet
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+      - name: Move the jobs to the new image
+        run: |
+          for job in $(gcloud run jobs list --region "$REGION"               --filter="metadata.labels.app=clevrr-etl-v2" --format="value(metadata.name)"); do
+            gcloud run jobs update "$job" --region "$REGION" --image "$IMAGE:${GITHUB_SHA}" --quiet
+          done

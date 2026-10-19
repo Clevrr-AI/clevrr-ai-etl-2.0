@@ -1,0 +1,20 @@
+# Install once: uv run pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format
+        language: system
+        types: [python]
+      - id: check-rules
+        name: ETL rules (scripts/check_rules.py)
+        entry: uv run --frozen python scripts/check_rules.py
+        language: system
+        pass_filenames: false
+        types: [python]

@@ -1,0 +1,17 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
+
+# Tests are local only (as in clevrr-backend-2.0). CI does not run them. Run `uv run pytest` before you push.
+tests/
+
+# terraform (infra/): local plugins, backend config and any local state
+infra/.terraform/
+infra/backend.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan

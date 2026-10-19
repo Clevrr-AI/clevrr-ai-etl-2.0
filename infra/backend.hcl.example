@@ -1,0 +1,4 @@
+# terraform init -backend-config=backend.hcl   (copy this file to backend.hcl; the bucket is
+# created once by hand with versioning on: gsutil mb -l asia-south1 gs://<bucket>)
+bucket = "clevrr-ai-sbx-tfstate"
+prefix = "etl-v2"

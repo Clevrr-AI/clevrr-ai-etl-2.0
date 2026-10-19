@@ -1,0 +1,76 @@
+# The nightly chain (plan 7.5). Each call runs one Cloud Run Job and waits for its execution;
+# a failed execution raises, so the workflow stops there (fail fast). Each job posts its own
+# Slack alert when ALERTS__SLACK_WEBHOOK_URL is set. Branch names are unique in the whole workflow.
+main:
+  steps:
+    - migrate:
+        parallel:
+          branches:
+            - pg:
+                steps:
+                  - pg_migrate:
+                      call: run_job
+                      args: {job: etl-pg-migrate}
+            - ch:
+                steps:
+                  - ch_migrate:
+                      call: run_job
+                      args: {job: etl-ch-migrate}
+    - catalog:
+        call: run_job
+        args: {job: etl-shopify-catalog}
+    - sales:
+        call: run_job
+        args: {job: etl-shopify-sales}
+    - ads:
+        parallel:
+          branches:
+            - ads_meta:
+                steps:
+                  - meta_ads:
+                      call: run_job
+                      args: {job: etl-meta-ads}
+            - ads_meta_region:
+                steps:
+                  - meta_ads_region:
+                      call: run_job
+                      args: {job: etl-meta-ads-region}
+            - ads_google:
+                steps:
+                  - google_ads:
+                      call: run_job
+                      args: {job: etl-google-ads}
+    - costs:
+        call: run_job
+        args: {job: etl-costs}
+    - checks:
+        parallel:
+          branches:
+            - check_shopify:
+                steps:
+                  - reliability_shopify:
+                      call: run_job
+                      args: {job: etl-reliability-shopify}
+            - check_meta:
+                steps:
+                  - reliability_meta:
+                      call: run_job
+                      args: {job: etl-reliability-meta}
+            - check_google:
+                steps:
+                  - reliability_google:
+                      call: run_job
+                      args: {job: etl-reliability-google}
+    - done:
+        return: "nightly finished"
+
+run_job:
+  params: [job]
+  steps:
+    - run:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: $${"projects/${project}/locations/${region}/jobs/" + job}
+        result: execution
+    - finished:
+        return: $${execution.name}
