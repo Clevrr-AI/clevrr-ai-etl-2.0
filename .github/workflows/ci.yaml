@@ -1,6 +1,6 @@
 # CI for clevrr-ai-etl-2.0 (plan 7.7, first part).
 #
-# Every push and pull request: uv sync --frozen -> ruff -> pyright -> import contracts ->
+# Every push to main or Staging, and every pull request: uv sync --frozen -> ruff -> pyright -> import contracts ->
 # ETL rules -> docker build -> smoke test (`etl list`). Tests are local only (git ignores
 # tests/): run `uv run pytest` before you push.
 #
@@ -11,7 +11,7 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, Staging]
   pull_request:
   workflow_dispatch:
 concurrency:
