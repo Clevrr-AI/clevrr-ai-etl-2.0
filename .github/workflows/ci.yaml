@@ -4,7 +4,7 @@
 # ETL rules -> docker build -> smoke test (`etl list`). Tests are local only (git ignores
 # tests/): run `uv run pytest` before you push.
 #
-# Deploy (plan 7.7), on main only and only when the repository variables GCP_WIF_PROVIDER,
+# Deploy (plan 7.7), on Staging only (the sandbox deploy branch) and only when the repository variables GCP_WIF_PROVIDER,
 # GCP_CI_SERVICE_ACCOUNT and ETL_IMAGE are set (terraform output in infra/): push the image
 # tagged with the commit SHA (never `latest`), then move every job labelled app=clevrr-etl-v2
 # to it. Keyless: Workload Identity Federation, no service-account key.
@@ -57,7 +57,7 @@ jobs:
     name: Push image and update jobs
     runs-on: ubuntu-latest
     needs: image
-    if: github.ref == 'refs/heads/main' && vars.GCP_WIF_PROVIDER != ''
+    if: github.ref == 'refs/heads/Staging' && vars.GCP_WIF_PROVIDER != ''
     env:
       IMAGE: ${{ vars.ETL_IMAGE }}
       REGION: asia-south1

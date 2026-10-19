@@ -88,6 +88,16 @@ Legacy behaviour that v2 copies on purpose, so the parity checks compare like wi
 
 Newest first. One entry per task.
 
+### 2026-10-19 · Turn on CI deploys from Staging (Phase 7.7)
+- Phase: 7.7 · Area: CI, infra · Type: change · Risk: low (sandbox, narrow permissions)
+- Changed:
+  - CI runs on pushes to `main` and `Staging`. The `deploy` job runs on `Staging` only, and only when the repository variable `GCP_WIF_PROVIDER` is set.
+  - `infra/`: new variable `deploy_branch` (default `Staging`); the GitHub OIDC condition allows only that repository and branch.
+  - The CI service account can push to the one registry repository (not project-wide), list Cloud Run jobs (read-only), update the `etl-*` jobs and act as the jobs' service account. Nothing else.
+  - `envs/sbx.tfvars`: `github_repository = "Clevrr-AI/clevrr-ai-etl-2.0"`.
+- Verify: `terraform apply` in sandbox added 19 resources and changed nothing. Outputs: provider `projects/1004856324034/locations/global/workloadIdentityPools/etl-v2-github/providers/github`, service account `clevrr-etl-v2-ci@clevrr-ai-sbx.iam.gserviceaccount.com`.
+- Next (the engineer): set the repository variables `GCP_WIF_PROVIDER`, `GCP_CI_SERVICE_ACCOUNT` and `ETL_IMAGE`, then push to `Staging`.
+
 ### 2026-10-19 · Cloud Run Jobs, Workflow, Scheduler and CI deploy (Phase 7.5, 7.7)
 - Phase: 7.5, 7.7 · Area: infra, CI, cli · Type: new · Risk: medium (creates GCP resources when applied; not applied)
 - Changed:

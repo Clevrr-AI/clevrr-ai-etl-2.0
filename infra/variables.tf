@@ -69,6 +69,12 @@ variable "nightly_schedule" {
   default     = ""
 }
 
+variable "deploy_branch" {
+  description = "The only branch whose pushes may deploy (GitHub OIDC ref condition)."
+  type        = string
+  default     = "Staging"
+}
+
 variable "github_repository" {
   description = "owner/repo allowed to deploy through Workload Identity Federation. Empty: no CI access."
   type        = string

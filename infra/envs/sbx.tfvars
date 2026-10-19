@@ -24,8 +24,9 @@ clickhouse = {
   password_secret = "v2-clickhouse-password"
 }
 
-org_allowlist    = ["legendoftoys.com", "shapercult.com", "mydesignation.com"]
-optional_secrets = {}
-task_count       = 1
-nightly_schedule = ""
-# github_repository = "manavgupta8826/clevrr-ai-etl-2.0"
+org_allowlist     = ["legendoftoys.com", "shapercult.com", "mydesignation.com"]
+optional_secrets  = {}
+task_count        = 1
+nightly_schedule  = ""
+github_repository = "Clevrr-AI/clevrr-ai-etl-2.0"
+deploy_branch     = "Staging"
