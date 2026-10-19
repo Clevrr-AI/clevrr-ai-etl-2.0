@@ -120,7 +120,7 @@ Newest first. One entry per task.
   - The CI service account can push to the one registry repository (not project-wide), list Cloud Run jobs (read-only), update the `etl-*` jobs and act as the jobs' service account. Nothing else.
   - `envs/sbx.tfvars`: `github_repository = "Clevrr-AI/clevrr-ai-etl-2.0"`.
 - Verify: `terraform apply` in sandbox added 19 resources and changed nothing. Outputs: provider `projects/1004856324034/locations/global/workloadIdentityPools/etl-v2-github/providers/github`, service account `clevrr-etl-v2-ci@clevrr-ai-sbx.iam.gserviceaccount.com`.
-- Next (the engineer): set the repository variables `GCP_WIF_PROVIDER`, `GCP_CI_SERVICE_ACCOUNT` and `ETL_IMAGE`, then push to `Staging`.
+- Next (the engineer): set the repository variables `GCP_WIF_PROVIDER` and `GCP_CI_SERVICE_ACCOUNT`, then push to `Staging`. `ETL_IMAGE`, `GKE_CLUSTER` and `GKE_ZONE` have sandbox defaults in `ci.yaml` (added after the first deploy pushed the image and then failed at the GKE step with the two variables empty).
 
 ### 2026-10-19 · Cloud Run Jobs, Workflow, Scheduler and CI deploy (Phase 7.5, 7.7)
 - Phase: 7.5, 7.7 · Area: infra, CI, cli · Type: new · Risk: medium (creates GCP resources when applied; not applied)

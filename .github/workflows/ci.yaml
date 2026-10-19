@@ -59,7 +59,8 @@ jobs:
     needs: image
     if: github.ref == 'refs/heads/Staging' && vars.GCP_WIF_PROVIDER != ''
     env:
-      IMAGE: ${{ vars.ETL_IMAGE }}
+      # Sandbox defaults (not secrets); a repository variable of the same name overrides each.
+      IMAGE: ${{ vars.ETL_IMAGE || 'asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2' }}
       REGION: asia-south1
     steps:
       - uses: actions/checkout@v4
@@ -80,8 +81,8 @@ jobs:
       - name: Move the Kubernetes CronJobs to the new image (cronjobs_dev/)
         uses: google-github-actions/get-gke-credentials@v2
         with:
-          cluster_name: ${{ vars.GKE_CLUSTER }}
-          location: ${{ vars.GKE_ZONE }}
+          cluster_name: ${{ vars.GKE_CLUSTER || 'clevrr-ckh-cluster-sandbox' }}
+          location: ${{ vars.GKE_ZONE || 'asia-south1-a' }}
       - name: Move the existing etl-all-* CronJobs to the new image
         run: |
           for job in etl-all-shopify etl-all-shopify-catalog-daily etl-all-shopify-products               etl-all-meta-ads etl-all-google-ads etl-products-cost etl-custom-backfill; do
