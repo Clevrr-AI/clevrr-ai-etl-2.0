@@ -1,0 +1,113 @@
+# Namespace-level guardrails for the `etl` namespace.
+#
+# Why this exists
+# ---------------
+# ETL cronjobs are pinned to `wi-etl-pool` via nodeSelector. That pool is 3 x e2-standard-2
+# (1930m allocatable CPU each = 5790m total) and, before this change, had cluster
+# autoscaling disabled. Two failure modes followed:
+#
+#   1. Jobs sat in Pending with "0/33 nodes are available: 3 Insufficient cpu,
+#      30 node(s) didn't match Pod's node affinity/selector" and a scale-up event with an
+#      EMPTY reason ("Pod didn't trigger scale-up:") because no pool was allowed to grow.
+#   2. Cronjobs running cloud-sql-proxy as a plain sidecar never completed, so each run
+#      leaked a Running pod holding its CPU/memory requests forever (~1.7 vCPU/day).
+#
+# Autoscaling on the pool and the native-sidecar conversion fix the immediate problem.
+# The objects below stop it recurring as new cronjobs are added: a job authored without
+# resources gets sane ones, no single job can eat the autoscaler's whole headroom, and a
+# newly added low-value job can never displace the core daily pipeline.
+#
+# Apply:  kubectl apply -f ETL/cronjobs/_namespace-guardrails.yaml
+#
+# NOTE: apply this AFTER lowering `limits.cpu` from "4" to 1500m in the etl-all-*.yaml
+# files, otherwise those manifests will be rejected by the LimitRange `max` below.
+---
+# Defaults + ceilings for every container in the namespace.
+#
+# `max.cpu: 1500m` deliberately sits below the 1930m a node can actually give a pod. The
+# etl-all-* jobs previously declared `limits: {cpu: "4", memory: 4Gi}` — unreachable on an
+# e2-standard-2 and the direct cause of the observed 450% CPU / 187% memory limit
+# overcommit on the busiest node, which shows up as CPU throttling and OOM-kills.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: etl-defaults
+  namespace: etl
+spec:
+  limits:
+  - type: Container
+    # Applied when a container omits limits entirely.
+    default:
+      cpu: "1"
+      memory: 2Gi
+    # Applied when a container omits requests entirely. Requests are what the scheduler
+    # and the autoscaler actually act on, so a job with no requests would otherwise be
+    # invisible to both and could pile onto an already-full node.
+    defaultRequest:
+      cpu: 250m
+      memory: 512Mi
+    # Rejects unschedulable-by-construction manifests at apply time.
+    max:
+      cpu: 1500m
+      memory: 4Gi
+    min:
+      cpu: 50m
+      memory: 64Mi
+    # NO maxLimitRequestRatio here — deliberately.
+    #
+    # It was set to 5 and had to be removed: it blocked pod creation for
+    # data-reliability-report entirely (157 failed creates,
+    # "cpu max limit to request ratio per Container is 5, but provided ratio is 10").
+    # Its cloud-sql-proxy declares requests.cpu: 100m and no limit, so the `default` limit
+    # of 1 CPU above was substituted, producing a 10x ratio that this rule then rejected.
+    # Any container that sets a small request and omits limits hits the same trap.
+    #
+    # It also never addressed the actual incident. The problem was `limits.cpu: "4"` on a
+    # node that can only give a pod 1930m — an unreachable limit, which `max.cpu` above
+    # blocks directly. The 450% node overcommit was an AGGREGATE property across pods;
+    # a per-container ratio cannot constrain that. The ResourceQuota's `limits.cpu` does.
+---
+# Backstop against a runaway or a bulk-added batch of cronjobs consuming the autoscaler's
+# entire ceiling. With wi-etl-pool at max 4 nodes/zone x 3 zones the pool tops out at
+# 23,160m CPU; 16 vCPU of requests leaves the autoscaler slack rather than letting the
+# namespace drive it straight to the limit.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: etl-quota
+  namespace: etl
+spec:
+  hard:
+    requests.cpu: "16"
+    requests.memory: 48Gi
+    limits.cpu: "32"
+    limits.memory: 96Gi
+    count/cronjobs.batch: "80"
+---
+# Priority tiers. These are what guarantee that adding a new job cannot starve the core
+# pipeline: an unclassified job defaults to priority 0 and therefore cannot preempt
+# anything, while etl-critical can reclaim capacity from etl-batch when the pool is full.
+#
+# globalDefault is deliberately NOT set on either class — it would apply cluster-wide and
+# affect the clickhouse and default pools too.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: etl-critical
+value: 1000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: >-
+  Core daily ETL that downstream reporting depends on (etl-all-*, pixel-attribution).
+  Preempts etl-batch when wi-etl-pool is saturated.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: etl-batch
+value: 100
+preemptionPolicy: Never
+globalDefault: false
+description: >-
+  Per-brand ETL, reports, backfills and analysis jobs. Waits for capacity rather than
+  displacing anything, and yields to etl-critical.

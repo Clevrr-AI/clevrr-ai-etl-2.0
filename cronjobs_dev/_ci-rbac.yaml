@@ -1,0 +1,26 @@
+# What CI may do in the cluster: move the CronJobs' image tag, nothing else. The GCP side
+# (reading the cluster's credentials) is in infra/k8s.tf. Apply once:
+#   kubectl apply -f cronjobs_dev/_ci-rbac.yaml --context=gke_clevrr-ai-sbx_asia-south1-a_clevrr-ckh-cluster-sandbox
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: etl-v2-ci
+  namespace: etl
+rules:
+- apiGroups: ["batch"]
+  resources: ["cronjobs"]
+  verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: etl-v2-ci
+  namespace: etl
+subjects:
+- kind: User
+  name: clevrr-etl-v2-ci@clevrr-ai-sbx.iam.gserviceaccount.com
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: etl-v2-ci
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,111 @@
+# Migrated unchanged from clevrr-ai-server/ETL/cronjobs/etl-custom-backfill.yaml (2026-10-19). The only edit:
+# the image is the v2 ETL image, which runs these ETL_* settings through `etl legacy`.
+# Recycled per-run backfill template — edit org/connector/dates, then:
+#   kubectl delete cj etl-custom-backfill -n etl && kubectl apply -f <this file>
+# Always delete+apply, NEVER `kubectl edit`: hand-edited env vars survive later
+# applies invisibly (the ETL_SCOPES=catalog leftover silently skipped the
+# advertising transforms on 2026-08-20). Never add ETL_START_EPOCH/ETL_END_EPOCH
+# here — in skip-fetch runs they override ETL_START_DATE/ETL_END_DATE.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  generation: 3
+  name: etl-custom-backfill
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  schedule: "00 02 * * *"
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: true
+  timeZone: UTC
+  jobTemplate:
+    metadata: {}
+    spec:
+      # Release the Job (and its pods) 24h after it finishes so a finished run
+      # can never keep holding CPU/memory requests against wi-etl-pool.
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 2
+      template:
+        metadata:
+          annotations:
+            # A scale-down must never kill a mid-run ETL. Required now that
+            # wi-etl-pool is autoscaled.
+            cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+          labels:
+            job: etl-custom-backfill
+        spec:
+          priorityClassName: etl-batch
+          containers:
+          - name: etl
+            image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:CHANGE-ME
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: CH_PASS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: PG_PASS
+            - name: ETL_ORG_IDS
+              value: chemistryindia.com
+            - name: ETL_CONNECTORS
+              value: google_ads
+            - name: ETL_MODE
+              value: backfill
+            - name: ETL_GROUP_PHASES
+              value: advertising:psql_to_psql,advertising:psql_to_clickhouse
+            - name: ETL_DB_MODE
+              value: both
+            - name: ETL_SKIP_FETCH
+              value: "false"
+              # value: "true"
+            - name: ETL_START_DATE
+              value: "2026-08-30 00:00:00+05:30"
+            - name: ETL_END_DATE
+              value: "2026-08-31 00:00:00+05:30"
+            - name: POSTGRES_HOST
+              value: "127.0.0.1"
+            - name: POSTGRES_PORT
+              value: "5432"
+            # - name: "include_pos"
+            #   value: "false"
+            # CAUTION: ETL_SCOPES filters which transform GROUPS run. Leave it unset
+            # for ads backfills — "catalog" here is what skipped the advertising
+            # transforms on the 2026-08-20 shapercult run. Only uncomment for
+            # shopify catalog-only backfills.
+            # - name: ETL_SCOPES
+            #   value: catalog
+            - name: ORCHESTRA_TASK_UID
+              value: "d6nrls19gvot52e60810"
+            - name: ORCHESTRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: ORCHESTRA_API_TOKEN
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            resources:
+              limits:
+                cpu: "1"
+                memory: 1Gi
+              requests:
+                cpu: 250m
+                memory: 512Mi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+status: {}

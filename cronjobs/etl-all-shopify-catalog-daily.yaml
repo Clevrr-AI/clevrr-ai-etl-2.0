@@ -1,0 +1,94 @@
+# Migrated unchanged from clevrr-ai-server/ETL/cronjobs/etl-all-shopify-catalog-daily.yaml (2026-10-19). The only edit:
+# the image is the v2 ETL image, which runs these ETL_* settings through `etl legacy`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-all-shopify-catalog-daily
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata: {}
+    spec:
+      # Release the Job (and its pods) 24h after it finishes so a finished run
+      # can never keep holding CPU/memory requests against wi-etl-pool.
+      ttlSecondsAfterFinished: 86400
+      activeDeadlineSeconds: 7200
+      backoffLimit: 0
+      template:
+        metadata:
+          annotations:
+            # A scale-down must never kill a mid-run ETL. Required now that
+            # wi-etl-pool is autoscaled.
+            cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+          labels:
+            job: etl-all-shopify-catalog-daily
+        spec:
+          priorityClassName: etl-critical
+          containers:
+          - env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: CH_PASS
+                  name: etl-secrets
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: PG_PASS
+                  name: etl-secrets
+            - name: ETL_COMMAND
+              value: run-all-for-connector shopify --mode auto
+            - name: ETL_SCOPES
+              value: catalog
+            - name: ETL_WIPE_BEFORE_LOAD
+              value: "true"
+            - name: ETL_DB_MODE
+              value: both
+            - name: ETL_SKIP_FETCH
+              value: "false"
+            - name: POSTGRES_HOST
+              value: 127.0.0.1
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: ORCHESTRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  key: ORCHESTRA_API_TOKEN
+                  name: etl-secrets
+            - name: ORCHESTRA_CHANNEL_UID
+              value: "HBO1jKzlVsv1hyuRJVl7"
+            - name: ETL_JOB_NAME
+              value: "etl-all-shopify-catalog-daily"
+            - name: CLICKHOUSE_CLUSTER
+              value: clevrr-cluster
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:CHANGE-ME
+            imagePullPolicy: IfNotPresent
+            name: etl
+            resources:
+              limits:
+                cpu: "1500m"
+                memory: 4Gi
+              requests:
+                cpu: "1"
+                memory: 2Gi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccount: cloud-sql-proxy
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+  schedule: 45 18 * * *
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: false
+  timeZone: UTC

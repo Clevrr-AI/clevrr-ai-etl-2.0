@@ -1,0 +1,96 @@
+# Migrated unchanged from clevrr-ai-server/ETL/cronjobs_dev/etl-all-shopify-catalog-daily.yaml (2026-10-19). The only edit:
+# the image is the v2 ETL image, which runs these ETL_* settings through `etl legacy`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-all-shopify-catalog-daily
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  # Daily at 18:30 UTC, ~30min before the daily sales run at 19:00 UTC.
+  # Refreshes products / product_variants and re-runs the product_cost_history
+  # seed so price changes in Shopify show up in the trend within 24h.
+  # The bi-monthly etl-all-shopify-products job (1st + 15th) stays in place as
+  # a deeper-refresh backstop in case daily runs fail for a stretch.
+  schedule: "30 18 * * *"
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: false
+  timeZone: UTC
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 7200
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            job: etl-all-shopify-catalog-daily
+        spec:
+          containers:
+          - name: etl
+            image: asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:manual-20261019-k8s
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: CH_PASS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: PG_PASS
+            - name: ETL_COMMAND
+              value: "run-all-for-connector shopify --mode auto"
+            - name: ETL_SCOPES
+              value: "catalog"
+            # Mandatory — raw_sanitized_product_variants.sql is INSERT-only with
+            # no ON CONFLICT clause, so re-running on PSQL without a wipe would
+            # fail on the PK constraint. The wipe is scoped to catalog tables
+            # (products, product_variants, raw_shopify_*); product_cost_history
+            # is NOT touched, so the price trend survives the rebuild cycle.
+            - name: ETL_WIPE_BEFORE_LOAD
+              value: "true"
+            - name: ETL_DB_MODE
+              value: both
+            - name: ETL_SKIP_FETCH
+              value: "false"
+            - name: POSTGRES_HOST
+              value: "127.0.0.1"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: ORCHESTRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: ORCHESTRA_API_TOKEN
+            - name: ORCHESTRA_CHANNEL_UID
+              value: "bXjvUPbI2TOqLRIj2dDd"
+            - name: ETL_JOB_NAME
+              value: "etl-all-shopify-catalog-daily"
+            - name: CLICKHOUSE_CLUSTER
+              value: sbx-cluster
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            resources:
+              limits:
+                cpu: "4"
+                memory: 4Gi
+              requests:
+                cpu: "1"
+                memory: 2Gi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool-sbx
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+status: {}

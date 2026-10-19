@@ -1,0 +1,88 @@
+# Migrated unchanged from clevrr-ai-server/ETL/cronjobs_dev/etl-all-amazon-ads.yaml (2026-10-19). The only edit:
+# the image is the v2 ETL image, which runs these ETL_* settings through `etl legacy`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-all-amazon-ads
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  schedule: "45 20 * * *"
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: false
+  timeZone: UTC
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 7200
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            job: etl-all-amazon-ads
+        spec:
+          containers:
+          - name: etl
+            image: asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:manual-20261019-k8s
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: CH_PASS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: PG_PASS
+            - name: ETL_COMMAND
+              value: "run-all-for-connector amazon_ads --mode auto"
+            - name: ETL_GROUP_PHASES
+              value: advertising:psql_to_psql
+            - name: ETL_DB_MODE
+              value: both
+            - name: ETL_SKIP_FETCH
+              value: "false"
+            - name: POSTGRES_HOST
+              value: "127.0.0.1"
+            - name: POSTGRES_PORT
+              value: "5432"
+            # - name: AMAZON_ADS_BACKFILL_DAYS
+            #   value: "90"
+            - name: ETL_START_DATE
+              value: "2026-02-01"
+            - name: ETL_END_DATE
+              value: "2026-02-28"
+            - name: ORCHESTRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: ORCHESTRA_API_TOKEN
+            - name: ORCHESTRA_CHANNEL_UID
+              value: "5NZSk556rMz6gE4Nol1v"
+            - name: ETL_JOB_NAME
+              value: "etl-all-amazon-ads"
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            resources:
+              limits:
+                cpu: "4"
+                memory: 4Gi
+              requests:
+                cpu: "1"
+                memory: 2Gi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool-sbx
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+status: {}

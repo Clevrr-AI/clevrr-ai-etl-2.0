@@ -30,3 +30,4 @@ task_count        = 1
 nightly_schedule  = ""
 github_repository = "Clevrr-AI/clevrr-ai-etl-2.0"
 deploy_branch     = "Staging"
+gke               = { name = "clevrr-ckh-cluster-sandbox", zone = "asia-south1-a" }

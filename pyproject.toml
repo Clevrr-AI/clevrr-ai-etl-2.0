@@ -68,6 +68,7 @@ max-statements = 50
 
 [tool.ruff.lint.per-file-ignores]
 "etl/core/settings.py" = ["TID251"]
+"etl/legacy.py" = ["TID251"]  # the legacy-settings boundary (etl legacy)
 "tests/**" = ["S101", "S105", "S106", "S603", "S608", "TID251", "PLR0915"]
 "scripts/**" = ["T20", "S603", "S607"]
 "alembic/env.py" = ["TID251"]

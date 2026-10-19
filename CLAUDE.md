@@ -28,7 +28,7 @@ Python 3.12 with `uv` and `uv.lock`. Synchronous clients (a batch process): psyc
 ## Rules
 
 1. A step is `def step(ctx, org, window) -> StepResult`. It is idempotent: a rerun of the same window leaves the same rows. It reads no environment variables and keeps no module state.
-2. Read environment variables only in `etl/core/settings.py`. Give no secret a default.
+2. Read environment variables only in `etl/core/settings.py` and `etl/legacy.py` (the legacy-settings boundary for the existing CronJobs). Give no secret a default.
 3. Do not build SQL with f-strings, `.format()`, `%` or `+`. Pass values as parameters (`%(name)s` for Postgres, `{name:Type}` for ClickHouse). Take identifiers from `psycopg.sql` or fixed constants. Put a query builder in a file named `sql_*.py`.
 4. Write only the target schema and database. Use unqualified table names. Name `public.<table>` only to read a table the backend owns (`organizations`, `organization_connectors`, `connectors`, `connector_endpoints`, `utm_rules`, `utm_mappings`, `attribution_channel_rules`). Never name `clevrr_db.`. `scripts/check_rules.py` enforces this.
 5. A failure is a failure. A page cap reached, a missing token, a failed check: raise `StepFailed`. Never log and go on. One org's failure never stops the other orgs.
@@ -50,6 +50,7 @@ Python 3.12 with `uv` and `uv.lock`. Synchronous clients (a batch process): psyc
 - Types: `uv run pyright`
 - Rules: `uv run lint-imports` and `uv run python scripts/check_rules.py`
 - Image: `docker build -t clevrr-etl-v2 .`
+- CronJobs: `cronjobs_dev/README.md` (the existing sandbox jobs, v2 image). `cronjobs/` is prod; never apply it during parity.
 - Infra: `infra/` (terraform). Read `infra/README.md`. Never apply without the engineer's go; never the prod project.
 - Demo data (manual): `uv run python -m tools.demo.run --mode range --start YYYY-MM-DD --end YYYY-MM-DD`
 
@@ -69,6 +70,8 @@ Python 3.12 with `uv` and `uv.lock`. Synchronous clients (a batch process): psyc
 - Delhivery is deferred (decision 2026-10-17): port it after the other sources. Legacy keeps its own CronJob until then.
 - Google Ads: verified by tests only; no live run yet (decision 2026-10-19). Its OAuth client is `GOOGLE_ADS__CLIENT_ID` / `GOOGLE_ADS__CLIENT_SECRET`; legacy keeps them in the sandbox ConfigMap `etl-config`.
 - Pixel jobs (attribution, probabilistic stitch, conversion export) are not ETL pipelines: they move to clevrr-backend-2.0 as v2 workers, next to pixel ingest (decision 2026-10-19).
+- Runtime (decision 2026-10-19): the EXISTING `etl-all-*` CronJobs in the existing GKE cluster (namespace `etl`), unchanged except the image: their files are migrated into `cronjobs_dev/` (sandbox) and `cronjobs/` (prod, never applied during parity). The v2 image runs their `ETL_*` settings through `etl legacy`, with the Cloud SQL proxy inside the image as legacy had it. `infra/` stays as the record of the GCP side; its Cloud Run Jobs and Workflow are kept but unscheduled.
+- `ckh-etl-ondemand` (the Cloud Run Job the app starts on connect) stays on the legacy image during parity (decision 2026-10-19); it switches at cut-over. The v2 image already accepts its `ETL_*` overrides.
 - Live verification runs use shapercult.com only, with a window of a few days (decision 2026-10-19), so each source finishes quickly. Run other pilot orgs only when asked.
 - During parity v2 never queues `creative_analysis_jobs` (the legacy worker turns them into Gemini spend) and never calls `/reports/auto_ingestion`; both move to the internal API later.
 
@@ -87,6 +90,27 @@ Legacy behaviour that v2 copies on purpose, so the parity checks compare like wi
 ## Change log
 
 Newest first. One entry per task.
+
+### 2026-10-19 · Run the ETL in the existing CronJobs, like legacy (Phase 7.5, revised)
+- Phase: 7.5, 7.7 · Area: cronjobs, image, cli, infra, CI · Type: change · Risk: medium (not applied yet)
+- Changed:
+  - `cronjobs_dev/` and `cronjobs/`: legacy's own CronJob files, migrated unchanged except the image (`clevrr-etl-v2`). The demo-data CronJob is not migrated (v2 demo data is `tools/demo`).
+  - `etl legacy` (`etl/legacy.py`): maps a job's `ETL_COMMAND`, `ETL_SCOPES`, `ETL_GROUP_PHASES`, `ETL_CONNECTORS`, `ETL_ORG_IDS` and dates to `etl run` invocations; translates legacy's connection names; a parity guard refuses `public` / `clevrr_db` as targets until `ETL_V2_CUTOVER=true`. Delhivery and Amazon jobs stop with a message.
+  - The image: the Cloud SQL proxy binary and `entrypoint.sh`, which starts the proxy from `CLOUDSQL_INSTANCE` and runs `etl legacy` when legacy settings are present; plain `etl` arguments still work.
+  - `cronjobs_dev/_ci-rbac.yaml`: CI may patch the CronJobs' image, nothing else. `infra/k8s.tf`: CI reads the cluster's credentials. CI moves the seven ETL CronJobs to each new image.
+- Why: the engineer's decision (2026-10-19): use the existing jobs and their configuration as they are; only the image changes.
+- Files: cronjobs/*, cronjobs_dev/*, etl/legacy.py, etl/cli.py, entrypoint.sh, Dockerfile, infra/k8s.tf, .github/workflows/ci.yaml, pyproject.toml, CLAUDE.md; local only: tests/unit/test_legacy.py
+- Verify: every mapping in the sandbox files has a unit test; `docker build` works; in the image, legacy settings without targets are refused by the guard, and with targets the job plans its runs and fails only at the database (none in the test). ruff, pyright strict, the rules and `terraform validate` are clean.
+- Applied in sandbox on 2026-10-19, with the engineer's go:
+  - `etl-config` got `POSTGRES__TARGET_SCHEMA=etl_v2`, `CLICKHOUSE__DATABASE=clevrr_db_v2`, `CLICKHOUSE__CLUSTER=sbx-cluster` and `RUN__ORG_ALLOWLIST` (the pilot orgs). Legacy ignores them. The cluster key is needed because only the catalog CronJobs carry legacy's `CLICKHOUSE_CLUSTER`; the first test run failed on a Distributed-table delete without it.
+  - `kubectl set image` moved the 7 ETL CronJobs (`etl-all-shopify`, `-catalog-daily`, `-products`, `-meta-ads`, `-google-ads`, `etl-products-cost`, `etl-custom-backfill`) to `clevrr-etl-v2:manual-20261019-k8s`. Everything else on them is as it was; all stay suspended. Delhivery and Amazon stay on the legacy image.
+  - `_ci-rbac.yaml` applied; terraform added the CI cluster-viewer binding (and reset `client` metadata on the 12 Cloud Run Jobs that `gcloud` had touched; no other change).
+  - Node pool `wi-etl-pool-sbx`: autoscaling on, min 0, max 2.
+  - The live CronJob is named `etl-products-cost` (its file is `etl-product-costs.yaml`); CI and the README use the live name.
+  - Test: `kubectl create job --from=cronjob/etl-products-cost` on the switched job succeeded (20 s on a freshly scaled node): the proxy started with the pod's identity, the legacy settings were translated, `run costs` wrote the org's cost rows, exit 0. The first attempt failed before the `CLICKHOUSE__CLUSTER` key was added.
+- Correction: the literal I had called a committed database password in legacy's CronJob files is `ORCHESTRA_CHANNEL_UID`, a notification channel id.
+- `etl legacy` also accepts the second spelling `CLICKHOUSE_HOST/PORT/USER/PASSWORD/DB` (the on-demand job and the reliability report use it; legacy's code read only `CKH_*`, so the prod on-demand job's `CLICKHOUSE_HOST` was ignored). `CKH_*` wins when both are set.
+- On-demand: the sandbox `ckh-etl-ondemand` job's ClickHouse host is an in-cluster DNS name that Cloud Run cannot resolve, so legacy's on-demand runs fail at the ClickHouse stage there. At cut-over set `CLICKHOUSE__HOST` to the ILB address on that job.
 
 ### 2026-10-19 · Turn on CI deploys from Staging (Phase 7.7)
 - Phase: 7.7 · Area: CI, infra · Type: change · Risk: low (sandbox, narrow permissions)

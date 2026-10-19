@@ -1,0 +1,97 @@
+# Migrated unchanged from clevrr-ai-server/ETL/cronjobs/etl-product-costs.yaml (2026-10-19). The only edit:
+# the image is the v2 ETL image, which runs these ETL_* settings through `etl legacy`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  generation: 3
+  name: etl-products-cost
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  # Runs after the daily Shopify catalog refresh (19:00 UTC) and after the bi-monthly
+  # full catalog refresh window so product_cost_history is freshly seeded in PSQL
+  # before this job mirrors it to ClickHouse.
+  schedule: "30 21 * * *"
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: false
+  timeZone: UTC
+  jobTemplate:
+    metadata: {}
+    spec:
+      # Release the Job (and its pods) 24h after it finishes so a finished run
+      # can never keep holding CPU/memory requests against wi-etl-pool.
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 2
+      template:
+        metadata:
+          annotations:
+            # A scale-down must never kill a mid-run ETL. Required now that
+            # wi-etl-pool is autoscaled.
+            cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+          labels:
+            job: etl-cogs
+        spec:
+          priorityClassName: etl-batch
+          containers:
+          - name: etl
+            image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:CHANGE-ME
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: CH_PASS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: PG_PASS
+            # ETL_ORG_IDS intentionally omitted — run-from-env auto-discovers every
+            # org with rows in product_cost_history when connector=internal and the
+            # only group_phase is costs:*. New orgs are picked up automatically the
+            # first time they have a cost row (seeded by the catalog ETL or written
+            # via POST /api/costs/product).
+            - name: ETL_CONNECTORS
+              value: internal
+            - name: ETL_MODE
+              value: backfill
+            - name: ETL_GROUP_PHASES
+              value: costs:psql_to_clickhouse
+            - name: ETL_DB_MODE
+              value: clickhouse
+            - name: ETL_SKIP_FETCH
+              value: "true"
+            - name: POSTGRES_HOST
+              value: "127.0.0.1"
+            - name: POSTGRES_PORT
+              value: "5432"
+            # Wide window covers all historical rows; the CH transform's NOT EXISTS
+            # guard prevents duplicate inserts on subsequent runs.
+            - name: "ETL_START_DATE"
+              value: "2015-01-01"
+            - name: "ETL_END_DATE"
+              value: "2099-12-31"
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            resources:
+              limits:
+                cpu: "1"
+                memory: 1Gi
+              requests:
+                cpu: 250m
+                memory: 512Mi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+status: {}

@@ -1,0 +1,92 @@
+# Migrated unchanged from clevrr-ai-server/ETL/cronjobs_dev/etl-custom-backfill.yaml (2026-10-19). The only edit:
+# the image is the v2 ETL image, which runs these ETL_* settings through `etl legacy`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  generation: 3
+  name: etl-custom-backfill
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  schedule: "00 02 * * *"
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: true
+  timeZone: UTC
+  jobTemplate:
+    metadata: {}
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            job: etl-custom-backfill
+        spec:
+          containers:
+          - name: etl
+            image: asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:manual-20261019-k8s
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: CH_PASS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: PG_PASS
+            - name: ETL_ORG_IDS
+              value: shapercult.com
+            - name: ETL_CONNECTORS
+              value: google_ads
+            - name: ETL_MODE
+              value: backfill
+            - name: ETL_GROUP_PHASES
+              value: advertising:psql_to_psql
+            - name: ETL_DB_MODE
+              value: both
+            - name: ETL_SKIP_FETCH
+              value: "false"
+            - name: ETL_START_DATE
+              value: "2026-08-06 00:00:00"
+            - name: ETL_END_DATE
+              value: "2026-08-07 00:00:00"
+            - name: POSTGRES_HOST
+              value: "127.0.0.1"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: ORCHESTRA_REPORTING_ENABLED
+              value: "true"
+            # - name: ETL_SCOPES
+            #   value: catalog
+            # - name: ETL_WIPE_BEFORE_LOAD
+            #   value: "true"
+            - name: ORCHESTRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: ORCHESTRA_API_TOKEN
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            resources:
+              limits:
+                cpu: "1"
+                memory: 1Gi
+              requests:
+                cpu: 250m
+                memory: 512Mi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool-sbx
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+status: {}

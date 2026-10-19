@@ -2,6 +2,7 @@
 
     etl run <pipeline> [--org ID ...] [--from YYYY-MM-DD --to YYYY-MM-DD]
     etl sweep            mark stale `running` runs `killed`
+    etl legacy           run from legacy's CronJob settings (ETL_COMMAND, ETL_* ...)
     etl pg-migrate       apply pending Postgres migrations (alembic) to the target schema
     etl ch-migrate       apply pending ClickHouse migrations (clickhouse_migrations/)
     etl list             the registered pipelines
@@ -53,6 +54,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--to", dest="end", type=_day, help="backfill end day (UTC, exclusive)")
     sub.add_parser("sweep", help="mark stale running runs killed")
     sub.add_parser("pg-migrate", help="apply pending Postgres migrations to the target schema")
+    sub.add_parser("legacy", help="run from legacy's CronJob settings (ETL_COMMAND, ETL_*)")
     sub.add_parser("ch-migrate", help="apply pending ClickHouse migrations to the target database")
     sub.add_parser("list", help="list pipelines")
     return parser
@@ -76,6 +78,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         for name, p in sorted(pipelines.PIPELINES.items()):
             sys.stdout.write(f"{name}\tsource={p.source}\tsteps={len(p.steps)}\n")
         return 0
+    if args.command == "legacy":
+        return _legacy()
     settings = load_settings()
     configure_logging(settings.log_level)
     if args.command == "pg-migrate":
@@ -124,3 +128,18 @@ def _run(args: argparse.Namespace, settings: Settings, ledger: PgLedger) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _legacy() -> int:
+    """One legacy job = one or more `etl run` invocations; the first failure stops it."""
+    from etl import legacy
+
+    job = legacy.read_job()
+    configure_logging(job.log_level)
+    log.info("etl.legacy_job", job=job.name, runs=[" ".join(r) for r in job.runs],
+             translated=job.translated)  # fmt: skip
+    for argv in job.runs:
+        code = main(argv)
+        if code:
+            return code
+    return 0

@@ -1,0 +1,86 @@
+# Migrated unchanged from clevrr-ai-server/ETL/cronjobs_dev/etl-all-shopify-products.yaml (2026-10-19). The only edit:
+# the image is the v2 ETL image, which runs these ETL_* settings through `etl legacy`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-all-shopify-products
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  schedule: "0 3 1,15 * *"
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: false
+  timeZone: UTC
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 14400
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            job: etl-all-shopify-products
+        spec:
+          containers:
+          - name: etl
+            image: asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:manual-20261019-k8s
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: CH_PASS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: PG_PASS
+            - name: ETL_COMMAND
+              value: "run-all-for-connector shopify --mode auto"
+            - name: ETL_SCOPES
+              value: "catalog"
+            - name: ETL_WIPE_BEFORE_LOAD
+              value: "true"
+            - name: ETL_DB_MODE
+              value: both
+            - name: ETL_SKIP_FETCH
+              value: "false"
+            - name: POSTGRES_HOST
+              value: "127.0.0.1"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: ORCHESTRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: ORCHESTRA_API_TOKEN
+            - name: ORCHESTRA_CHANNEL_UID
+              value: "bXjvUPbI2TOqLRIj2dDd"
+            - name: ETL_JOB_NAME
+              value: "etl-all-shopify-products"
+            - name: CLICKHOUSE_CLUSTER
+              value: sbx-cluster
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            resources:
+              limits:
+                cpu: "4"
+                memory: 4Gi
+              requests:
+                cpu: "1"
+                memory: 2Gi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool-sbx
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+status: {}
