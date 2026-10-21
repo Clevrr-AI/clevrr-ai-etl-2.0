@@ -1,20 +1,13 @@
-# One Cloud Run Job per pipeline (plan 7.5). Every job runs the same image with its own args;
-# `etl run` shards the orgs over the job's tasks. Retries: 1. Timeouts and memory per pipeline.
+# Two Cloud Run Jobs, for the migrations only (plan 7.5, reduced 2026-10-21): `etl pg-migrate`
+# and `etl ch-migrate` run the same image and reach the databases over the VPC connector, so a
+# schema change needs no tunnel. The pipelines run in the existing Kubernetes CronJobs
+# (cronjobs_dev/); their Cloud Run Jobs, the nightly Workflow and the schedulers were removed
+# on 2026-10-21 (the engineer's decision).
 
 locals {
   jobs = {
-    "etl-pg-migrate"          = { args = ["pg-migrate"], memory = "1Gi", cpu = "1", timeout = "900s" }
-    "etl-ch-migrate"          = { args = ["ch-migrate"], memory = "1Gi", cpu = "1", timeout = "900s" }
-    "etl-sweep"               = { args = ["sweep"], memory = "512Mi", cpu = "1", timeout = "300s" }
-    "etl-shopify-catalog"     = { args = ["run", "shopify-catalog"], memory = "2Gi", cpu = "1", timeout = "3600s" }
-    "etl-shopify-sales"       = { args = ["run", "shopify-sales"], memory = "4Gi", cpu = "2", timeout = "7200s" }
-    "etl-meta-ads"            = { args = ["run", "meta-ads"], memory = "2Gi", cpu = "1", timeout = "7200s" }
-    "etl-meta-ads-region"     = { args = ["run", "meta-ads-region"], memory = "1Gi", cpu = "1", timeout = "3600s" }
-    "etl-google-ads"          = { args = ["run", "google-ads"], memory = "2Gi", cpu = "1", timeout = "7200s" }
-    "etl-costs"               = { args = ["run", "costs"], memory = "1Gi", cpu = "1", timeout = "1800s" }
-    "etl-reliability-shopify" = { args = ["run", "reliability-shopify"], memory = "1Gi", cpu = "1", timeout = "1800s" }
-    "etl-reliability-meta"    = { args = ["run", "reliability-meta"], memory = "1Gi", cpu = "1", timeout = "1800s" }
-    "etl-reliability-google"  = { args = ["run", "reliability-google"], memory = "1Gi", cpu = "1", timeout = "1800s" }
+    "etl-pg-migrate" = { args = ["pg-migrate"], memory = "1Gi", cpu = "1", timeout = "900s" }
+    "etl-ch-migrate" = { args = ["ch-migrate"], memory = "1Gi", cpu = "1", timeout = "900s" }
   }
   plain_env = {
     ENV                     = "sbx"
@@ -44,7 +37,7 @@ resource "google_cloud_run_v2_job" "job" {
   labels              = { app = "clevrr-etl-v2" } # CI finds the jobs by this label
 
   template {
-    task_count = contains(["etl-pg-migrate", "etl-ch-migrate", "etl-sweep"], each.key) ? 1 : var.task_count
+    task_count = 1
     template {
       service_account = google_service_account.etl.email
       max_retries     = 1

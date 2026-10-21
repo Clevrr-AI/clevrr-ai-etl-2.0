@@ -57,18 +57,6 @@ variable "optional_secrets" {
   default     = {}
 }
 
-variable "task_count" {
-  description = "Parallel tasks per job; orgs are sharded across them (CLOUD_RUN_TASK_INDEX)."
-  type        = number
-  default     = 1
-}
-
-variable "nightly_schedule" {
-  description = "Cron (UTC) for the nightly workflow. Empty: no schedule (run it by hand)."
-  type        = string
-  default     = ""
-}
-
 variable "deploy_branch" {
   description = "The only branch whose pushes may deploy (GitHub OIDC ref condition)."
   type        = string

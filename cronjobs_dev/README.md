@@ -6,7 +6,7 @@ account `cloud-sql-proxy` and node pool. The only edit is the image. The v2 imag
 `ETL_*` settings through `etl legacy` (see `etl/legacy.py`):
 
 | CronJob | Legacy settings | v2 run |
-|---|---|---|
+| --- | --- | --- |
 | etl-all-shopify-catalog-daily, etl-all-shopify-products | shopify, `ETL_SCOPES=catalog` | `run shopify-catalog` |
 | etl-all-shopify | shopify, `sales:psql_to_psql` | `run shopify-sales` |
 | etl-all-meta-ads | meta_ads | `run meta-ads`, then `run meta-ads-region` |
@@ -21,17 +21,22 @@ The Cloud SQL proxy runs inside the image (entrypoint.sh), as legacy's did, from
 
 ## What the cluster needs (one-time, sandbox only)
 
-1. The v2 targets in `etl-config`, so the jobs write `etl_v2` / `clevrr_db_v2` and only the
-   pilot orgs, plus the ClickHouse cluster name (only the catalog jobs carry legacy's
-   `CLICKHOUSE_CLUSTER`; without it a delete runs on the Distributed table and fails). Without them `etl legacy` refuses to run (it will not write legacy's tables):
+1. The v2 keys in `etl-config` (set 2026-10-19): `ETL_V2_CUTOVER=true` — the jobs write the
+   sandbox's own tables, `public` / `clevrr_db` (the TL's decision; legacy's sandbox copy is
+   retired) — `CLICKHOUSE__CLUSTER` (only the catalog jobs carry legacy's `CLICKHOUSE_CLUSTER`;
+   without it a delete runs on the Distributed table and fails) and `RUN__ORG_ALLOWLIST` (pilot
+   orgs only). Legacy ignores these keys:
 
    ```bash
    C=--context=gke_clevrr-ai-sbx_asia-south1-a_clevrr-ckh-cluster-sandbox
    kubectl patch configmap etl-config -n etl $C --type merge -p \
-     '{"data":{"POSTGRES__TARGET_SCHEMA":"etl_v2","CLICKHOUSE__DATABASE":"clevrr_db_v2","CLICKHOUSE__CLUSTER":"sbx-cluster","RUN__ORG_ALLOWLIST":"[\"<org-a>\",\"<org-b>\"]"}}'
+     '{"data":{"ETL_V2_CUTOVER":"true","CLICKHOUSE__CLUSTER":"sbx-cluster","RUN__ORG_ALLOWLIST":"[\"<org-a>\",\"<org-b>\"]"}}'
    ```
 
-   Legacy ignores these keys. At cut-over they are removed and `ETL_V2_CUTOVER=true` is set.
+   Without `ETL_V2_CUTOVER` (or `POSTGRES__TARGET_SCHEMA` + `CLICKHOUSE__DATABASE` naming
+   separate v2 targets) `etl legacy` refuses to run. Before the first run, bring the targets to
+   v2's schema with `etl pg-migrate` and `etl ch-migrate` (done on the sandbox 2026-10-19; both
+   keep legacy's tables and rows).
 2. The image on each CronJob: `kubectl apply -f cronjobs_dev/<file>.yaml` (or CI, below).
 3. For `etl-all-google-ads`: add `GOOGLE_ADS__CLIENT_ID`, `GOOGLE_ADS__CLIENT_SECRET` and
    `GOOGLE_ADS__DEVELOPER_TOKEN` to `etl-secrets` and reference them in its file (legacy's
