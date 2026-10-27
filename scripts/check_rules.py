@@ -12,7 +12,6 @@ Rules:
   unqualified, so it resolves in the target schema (search_path) and never in legacy's.
 - ch-database: SQL never names `clevrr_db.`; ClickHouse tables are unqualified, so they resolve
   in the client's database (the target, e.g. clevrr_db_v2).
-- sys-path, file-size (400 lines), function-size (60 lines).
 """
 
 from __future__ import annotations

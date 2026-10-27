@@ -101,7 +101,9 @@ INSERT INTO advertising (
   video_view_rate,
   hook_rate,
   hold_rate,
-  ad_format
+  ad_format,
+  thumbnail_url,
+  image_url
 )
 WITH
 base_ads AS (
@@ -119,6 +121,7 @@ base_ads AS (
     a.ad_id::BIGINT                      AS ad_id,
     a.ad_name,
     a.ad_status,
+    a.ad_primary_status,
     a.impressions,
     a.clicks,
     a.cost_micros,
@@ -340,7 +343,10 @@ ad_lv AS (
     )                                     AS ad_name,
     ba.ad_group_id,
     COALESCE(ba.ad_group_name, ag.ad_group_name) AS ad_group_name,
-    ba.ad_status,
+    -- ad_status is the serving status, like Meta's effective_status: Google's
+    -- ad_group_ad.primary_status (ELIGIBLE, LIMITED, PAUSED, NOT_ELIGIBLE, PENDING, REMOVED)
+    -- when the fetch has it (2026-10-27), else the user-set ad_group_ad.status (ENABLED, PAUSED).
+    COALESCE(NULLIF(ba.ad_primary_status, ''), ba.ad_status) AS ad_status,
     COALESCE(ba.ad_group_status, ag.ad_group_status) AS ad_group_status,
     ba.campaign_id,
     COALESCE(ba.campaign_name, cc.campaign_name)     AS campaign_name,
@@ -384,7 +390,11 @@ ad_lv AS (
       WHEN gc.ad_type = 'RESPONSIVE_SEARCH_AD' THEN 'responsive_search'
       WHEN gc.ad_type IS NOT NULL THEN LOWER(gc.ad_type)
       ELSE 'unknown'
-    END AS ad_format
+    END AS ad_format,
+    -- The picture from the creative snapshot (image ads, display and Demand Gen images,
+    -- YouTube thumbnails; 2026-10-27). Search and Shopping ads have none.
+    gc.image_url AS thumbnail_url,
+    gc.image_url AS image_url
   FROM base_ads ba
   LEFT JOIN ag_clean ag
     ON ag.ad_group_id = ba.ad_group_id
@@ -438,7 +448,9 @@ campaign_lv AS (
     NULL::DOUBLE PRECISION AS video_view_rate,
     NULL::NUMERIC(10,6) AS hook_rate,
     NULL::NUMERIC(10,6) AS hold_rate,
-    NULL::TEXT AS ad_format
+    NULL::TEXT AS ad_format,
+    NULL::TEXT AS thumbnail_url,
+    NULL::TEXT AS image_url
   FROM campaign_clean cc
   LEFT JOIN campaign_conv ccap
     ON ccap.campaign_id = cc.campaign_id
@@ -483,7 +495,7 @@ SELECT
   landing_page_view, add_to_cart, checkout_initatied, add_payment_info, number_of_purchases,
   spend, revenue, created_at, campaign_level_type, link,
   video_views, video_quartile_p25_rate, video_quartile_p50_rate, video_quartile_p75_rate,
-  video_quartile_p100_rate, video_view_rate, hook_rate, hold_rate, ad_format
+  video_quartile_p100_rate, video_view_rate, hook_rate, hold_rate, ad_format, thumbnail_url, image_url
 FROM ad_lv_dedup
 UNION ALL
 SELECT
@@ -492,5 +504,5 @@ SELECT
   landing_page_view, add_to_cart, checkout_initatied, add_payment_info, number_of_purchases,
   spend, revenue, created_at, campaign_level_type, link,
   video_views, video_quartile_p25_rate, video_quartile_p50_rate, video_quartile_p75_rate,
-  video_quartile_p100_rate, video_view_rate, hook_rate, hold_rate, ad_format
+  video_quartile_p100_rate, video_view_rate, hook_rate, hold_rate, ad_format, thumbnail_url, image_url
 FROM campaign_lv_dedup

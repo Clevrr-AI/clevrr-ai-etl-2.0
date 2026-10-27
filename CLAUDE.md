@@ -92,6 +92,21 @@ Legacy behaviour that v2 copies on purpose, so the parity checks compare like wi
 
 Newest first. One entry per task.
 
+### 2026-10-27 · Google Ads: a picture for each ad
+- Phase: 7.3 · Area: google_ads · Type: change · Risk: low (the creative snapshot stays best-effort: a failure logs and skips it)
+- Changed: The creative snapshot query also selects the image and video assets of display, Demand Gen, app and video ads. One `asset` query per account (IMAGE and YOUTUBE_VIDEO) gives each asset's picture URL or YouTube video id. `datasets.picture` picks one picture per ad: the image ad's URL, else the first marketing image, else the YouTube thumbnail (`i.ytimg.com/vi/<id>/hqdefault.jpg`). The raw table gets `image_url` and `youtube_video_id` (Alembic 0006); `video_ad_video` now holds the video asset name. The advertising transform writes the picture to `thumbnail_url` and `image_url`, like Meta; campaign-level rows get NULL.
+- Why: The dashboard's Insights panel shows Google ads now (backend 2.0, 2026-10-27) and the engineer wants their pictures. Search and Shopping ads have no picture in the API.
+- Files: etl/sources/google_ads/datasets.py, etl/sources/google_ads/fetch.py, etl/sources/google_ads/sql/google_advertising.sql, alembic/versions/0006_google_ad_pictures.py, CLAUDE.md
+- Verify: ruff, ruff format, pyright, lint-imports and check_rules pass; `alembic heads` is 0006. A local run of `creative_row` on sample rows gives the image URL for an image ad, the asset URL for a display ad, the YouTube thumbnail for a video ad and none for a search ad. Not checked: the GAQL field names against the live API v24 (if one is wrong the snapshot fails and logs `google_ads.creatives_failed`), and the migration on a database.
+- To apply: `uv run etl pg-migrate` (0005 and 0006), then a Google Ads run; a backfill run fills pictures for old days.
+
+### 2026-10-27 · Google Ads: the ad's serving status (ad_group_ad.primary_status)
+- Phase: 7.3 · Area: google_ads · Type: change · Risk: low (one nullable column; a run before the migration fails on the missing column)
+- Changed: The ad-performance query reads `ad_group_ad.primary_status` too. The raw row keeps it in the new column `raw_google_ads_ad_group_ad.ad_primary_status` (Alembic 0005). The advertising transform writes `ad_status = COALESCE(NULLIF(ad_primary_status, ''), ad_status)`: the serving status (ELIGIBLE, LIMITED, PAUSED, NOT_ELIGIBLE, PENDING, REMOVED) when the fetch has it, else the user-set status as before. `ad_group_status` and `campaign_status` stay the user-set statuses.
+- Why: A Google ad's `ad_status` was the user-set ENABLED, which says nothing about an ad whose ad group or campaign is paused, or an ad that is disapproved. Meta's `ad_status` is already `effective_status`. With the same meaning on both sources, the dashboard's "Active only" can work for Google ads (backend 2.0 and frontend 2.0 count ELIGIBLE and LIMITED as serving, 2026-10-27).
+- Files: etl/sources/google_ads/datasets.py, etl/sources/google_ads/sql/google_advertising.sql, alembic/versions/0005_google_ad_primary_status.py, CLAUDE.md
+- Verify: ruff, ruff format, pyright, lint-imports and check_rules pass. Not checked: a run against the Google Ads API and the migration on a database (the engineer runs `uv run etl pg-migrate` on sandbox, then a Google Ads run; rows loaded before that keep ENABLED / PAUSED).
+- To apply: `uv run etl pg-migrate` on each target schema before the next Google Ads run. A backfill run over the history refreshes `ad_status` for old days; without it only new days carry the serving status.
 ### 2026-10-21 · Drop the parity targets and reduce `infra/` to the migrate jobs
 - Phase: 7.5, 7.6 · Area: infra, sandbox databases · Type: change · Risk: medium (applied in sandbox)
 - Changed:

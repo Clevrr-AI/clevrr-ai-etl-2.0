@@ -94,7 +94,10 @@ def load_customer(conn: Connection[Any], api: GoogleAds, org: str, job: str, cid
             actions,
         )
     try:
-        creatives = [ds.creative_row(org, job, r)
+        assets: ds.Assets = dict(
+            e for e in (ds.asset_entry(r) for r in api.search(cid, ds.ASSETS, login_for)) if e
+        )
+        creatives = [ds.creative_row(org, job, r, assets)
                      for r in api.search(cid, ds.AD_CREATIVES, login_for)]  # fmt: skip
         with conn.transaction():
             detail["ad_creatives"] = upsert(conn, "raw_google_ads_ad_creative", ds.CREATIVE_COLUMNS,
