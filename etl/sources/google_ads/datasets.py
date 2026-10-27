@@ -17,6 +17,7 @@ from typing import Any, LiteralString
 Row = dict[str, Any]
 
 _ADPERF = """SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group.id, ad_group_ad.status,
+  ad_group_ad.primary_status,
   campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type,
   campaign.advertising_channel_sub_type, customer.id, metrics.impressions, metrics.clicks,
   metrics.cost_micros, metrics.conversions, metrics.conversions_value,
@@ -59,8 +60,18 @@ AD_CREATIVES = """SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.
   ad_group_ad.ad.responsive_display_ad.descriptions,
   ad_group_ad.ad.responsive_display_ad.business_name,
   ad_group_ad.ad.responsive_display_ad.call_to_action_text, ad_group_ad.ad.image_ad.image_url,
+  ad_group_ad.ad.responsive_display_ad.marketing_images,
+  ad_group_ad.ad.responsive_display_ad.square_marketing_images,
+  ad_group_ad.ad.demand_gen_multi_asset_ad.marketing_images,
+  ad_group_ad.ad.demand_gen_video_responsive_ad.videos, ad_group_ad.ad.app_ad.images,
+  ad_group_ad.ad.video_ad.video.asset, ad_group_ad.ad.video_responsive_ad.videos,
   ad_group_ad.ad.display_url, ad_group_ad.status, campaign.id, campaign.advertising_channel_type
 FROM ad_group_ad WHERE ad_group_ad.status != 'REMOVED'"""
+# The pictures behind the asset-based ads: one query per account, joined in Python (an
+# ad row only names the asset). YouTube videos give a video id; the thumbnail is i.ytimg.com.
+ASSETS = """SELECT asset.resource_name, asset.type, asset.image_asset.full_size.url,
+  asset.youtube_video_asset.youtube_video_id
+FROM asset WHERE asset.type IN ('IMAGE', 'YOUTUBE_VIDEO')"""
 CLICK_VIEW = (
     "SELECT click_view.gclid, click_view.ad_group_ad, campaign.id, ad_group.id, customer.id,"
     " segments.date FROM click_view WHERE segments.date = '{day}'"
@@ -108,6 +119,9 @@ def adperf(r: Row) -> Row:
             "ad_group_id": ag.get("id"), "ad_group_name": ag.get("name"),
             "ad_group_status": ag.get("status"), "ad_id": ad.get("ad", {}).get("id"),
             "ad_name": ad.get("ad", {}).get("name"), "ad_status": ad.get("status"),
+            # The serving status (ELIGIBLE, LIMITED, PAUSED, NOT_ELIGIBLE...), like Meta's
+            # effective_status; the transform writes it to advertising.ad_status.
+            "ad_primary_status": ad.get("primaryStatus"),
             "impressions": m.get("impressions"), "clicks": m.get("clicks"),
             "cost_micros": m.get("costMicros"), "conversions": m.get("conversions"),
             "conversions_value": m.get("conversionsValue"),
@@ -193,8 +207,8 @@ DATED: tuple[Dataset, ...] = (
             ("organization_id", "job_id", "customer_id", "campaign_id", "campaign_name",
              "campaign_status", "advertising_channel_type", "advertising_channel_sub_type",
              "ad_group_id", "ad_group_name", "ad_group_status", "ad_id", "ad_name", "ad_status",
-             "impressions", "clicks", "cost_micros", "conversions", "conversions_value",
-             "__hevo_report_date", "video_views", "video_quartile_p25_rate",
+             "ad_primary_status", "impressions", "clicks", "cost_micros", "conversions",
+             "conversions_value", "__hevo_report_date", "video_views", "video_quartile_p25_rate",
              "video_quartile_p50_rate", "video_quartile_p75_rate", "video_quartile_p100_rate",
              "video_view_rate"),
             ("organization_id", "customer_id", "ad_id", "__hevo_report_date")),
@@ -254,19 +268,65 @@ def conversion_action_row(r: Row) -> list[Any]:
 CREATIVE_COLUMNS = (
     "ad_id", "organization_id", "job_id", "ad_name", "ad_type", "final_urls", "ad_strength",
     "responsive_search_ad", "responsive_display_ad", "image_ad_image_url", "video_ad_video",
-    "display_url", "ad_status", "campaign_id", "advertising_channel_type",
+    "display_url", "ad_status", "campaign_id", "advertising_channel_type", "image_url",
+    "youtube_video_id",
 )  # fmt: skip
 
+# An asset's picture: the image URL, or the YouTube video id (a thumbnail is made from it).
+Assets = dict[str, tuple[str | None, str | None]]
+_IMAGE_LISTS = (("responsiveDisplayAd", "marketingImages"),
+                ("responsiveDisplayAd", "squareMarketingImages"),
+                ("demandGenMultiAssetAd", "marketingImages"), ("appAd", "images"))  # fmt: skip
+_VIDEO_LISTS = (("videoResponsiveAd", "videos"), ("demandGenVideoResponsiveAd", "videos"))
 
-def creative_row(org: str, job: str, r: Row) -> list[Any]:
+
+def asset_entry(r: Row) -> tuple[str, tuple[str | None, str | None]] | None:
+    a = r.get("asset", {})
+    name = a.get("resourceName")
+    if not name:
+        return None
+    image = ((a.get("imageAsset") or {}).get("fullSize") or {}).get("url")
+    video = (a.get("youtubeVideoAsset") or {}).get("youtubeVideoId")
+    return str(name), (str(image) if image else None, str(video) if video else None)
+
+
+def _asset_names(ad: Row, lists: tuple[tuple[str, str], ...]) -> list[str]:
+    names: list[str] = []
+    for kind, field in lists:
+        for item in (ad.get(kind) or {}).get(field) or []:
+            if isinstance(item, dict) and item.get("asset"):
+                names.append(str(item["asset"]))
+    return names
+
+
+def picture(ad: Row, assets: Assets) -> tuple[str | None, str | None, str | None]:
+    """(image_url, youtube_video_id, video asset) of an ad. Image ads carry their URL; display,
+    Demand Gen and app ads name image assets; video ads name a YouTube asset. Search and
+    Shopping ads have no picture in the API."""
+    video_assets = [n for n in _asset_names(ad, _VIDEO_LISTS)]
+    single = ((ad.get("videoAd") or {}).get("video") or {}).get("asset")
+    if single:
+        video_assets.insert(0, str(single))
+    video_id = next((assets[n][1] for n in video_assets if n in assets and assets[n][1]), None)
+    image = (ad.get("imageAd") or {}).get("imageUrl")
+    if not image:
+        image = next((assets[n][0] for n in _asset_names(ad, _IMAGE_LISTS)
+                      if n in assets and assets[n][0]), None)  # fmt: skip
+    if not image and video_id:
+        image = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    return (str(image) if image else None, video_id, video_assets[0] if video_assets else None)
+
+
+def creative_row(org: str, job: str, r: Row, assets: Assets | None = None) -> list[Any]:
     ad = r.get("adGroupAd", {}).get("ad", {})
+    image, video_id, video_asset = picture(ad, assets or {})
     return [_int(ad.get("id")), org, job, ad.get("name"), ad.get("type"),
             json.dumps(ad.get("finalUrls") or []), r.get("adGroupAd", {}).get("adStrength"),
             json.dumps(ad.get("responsiveSearchAd") or {}),
             json.dumps(ad.get("responsiveDisplayAd") or {}),
-            (ad.get("imageAd") or {}).get("imageUrl"), None, ad.get("displayUrl"),
+            (ad.get("imageAd") or {}).get("imageUrl"), video_asset, ad.get("displayUrl"),
             r.get("adGroupAd", {}).get("status"), _int(r.get("campaign", {}).get("id")),
-            r.get("campaign", {}).get("advertisingChannelType")]  # fmt: skip
+            r.get("campaign", {}).get("advertisingChannelType"), image, video_id]  # fmt: skip
 
 
 CLICK_COLUMNS = ("organization_id", "gclid", "click_date", "customer_id", "campaign_id",
