@@ -88,7 +88,7 @@ jobs:
           for job in etl-all-shopify etl-all-shopify-catalog-daily etl-all-shopify-products               etl-all-meta-ads etl-all-google-ads etl-products-cost etl-custom-backfill; do
             kubectl set image cronjob/"$job" -n etl etl="$IMAGE:${GITHUB_SHA}"
           done
-      - name: Move the Cloud Run Jobs too (infra/, kept as the GCP record)
+      - name: Move the two migrate Cloud Run Jobs too (infra/jobs.tf)
         run: |
           for job in $(gcloud run jobs list --region "$REGION"               --filter="metadata.labels.app=clevrr-etl-v2" --format="value(metadata.name)"); do
             gcloud run jobs update "$job" --region "$REGION" --image "$IMAGE:${GITHUB_SHA}" --quiet
