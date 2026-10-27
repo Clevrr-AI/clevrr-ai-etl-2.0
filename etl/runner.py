@@ -54,6 +54,9 @@ class OrgOutcome:
     failed_step: str | None = None
     error_type: str | None = None
     message: str | None = None
+    # The run's window and mode, for the API's landed signal (set on success only).
+    window: Window | None = None
+    mode: Mode | None = None
 
 
 @dataclass(slots=True)
@@ -131,7 +134,7 @@ class Runner:
         self.ledger.finish_run(ctx.job_id, Status.SUCCEEDED, totals=totals)
         ctx.log.info("etl.run_succeeded", records_in=totals.records_in,
                      records_out=totals.records_out)  # fmt: skip
-        return OrgOutcome(org.org_id, ctx.job_id, Status.SUCCEEDED)
+        return OrgOutcome(org.org_id, ctx.job_id, Status.SUCCEEDED, window=window, mode=mode)
 
     def _fail(self, ctx: RunContext, org: Org, step_id: int, step: str, exc: BaseException,
               totals: StepResult, status: Status) -> OrgOutcome:  # fmt: skip

@@ -26,15 +26,16 @@ import httpx
 
 from etl import pipelines
 from etl.core.alerts import build_alerts
+from etl.core.api_client import ApiError, InternalApi, build_api
 from etl.core.ch_migrate import migrate
 from etl.core.connector_table import TableConnectorSource
 from etl.core.connectors import shard
 from etl.core.db import open_clickhouse, open_pg_pool
 from etl.core.logging import configure_logging, get_logger
-from etl.core.model import Org
+from etl.core.model import Org, Pipeline, Status
 from etl.core.run_ledger import PgLedger
 from etl.core.settings import Settings, load_settings
-from etl.runner import Runner
+from etl.runner import Runner, RunSummary
 
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 log = get_logger(__name__)
@@ -121,9 +122,33 @@ def _run(args: argparse.Namespace, settings: Settings, ledger: PgLedger) -> int:
         log.info("etl.started", pipeline=pipeline.name, orgs=len(orgs),
                  task=f"{settings.task_index}/{settings.task_count}")  # fmt: skip
         summary = runner.run(pipeline, orgs, start=args.start, end=args.end)
+        _signal_landed(build_api(settings.api, http), pipeline, summary)
     ch.close()
     log.info("etl.finished", pipeline=pipeline.name, orgs=len(orgs), failed=len(summary.failed))
     return 0 if summary.ok else 1
+
+
+# The pipelines whose success means "this connector's data landed" for onboarding. The
+# catalog and the region mirror are extras of a connector, as legacy's hook skipped them.
+LANDED_PROVIDERS = {"shopify-sales": "shopify", "meta-ads": "meta_ads", "google-ads": "google_ads"}
+
+
+def _signal_landed(api: InternalApi | None, pipeline: Pipeline, summary: RunSummary) -> None:
+    """Tell the API about each org whose run succeeded (API__BASE_URL set). A failure here
+    is logged: the data is loaded; the API's flags can be set again by the next run."""
+    provider = LANDED_PROVIDERS.get(pipeline.name)
+    if api is None or provider is None:
+        return
+    for outcome in summary.outcomes:
+        if outcome.status is not Status.SUCCEEDED or outcome.window is None:
+            continue
+        window = (outcome.window.start.isoformat(), outcome.window.end.isoformat())
+        try:
+            api.landed(org_id=outcome.org_id, provider=provider, run_id=outcome.job_id,
+                       mode=outcome.mode.value if outcome.mode else "incremental",
+                       window=window, tables=[pipeline.name])  # fmt: skip
+        except (ApiError, httpx.HTTPError) as exc:
+            log.warning("etl.landed_failed", org_id=outcome.org_id, error_type=type(exc).__name__)
 
 
 if __name__ == "__main__":

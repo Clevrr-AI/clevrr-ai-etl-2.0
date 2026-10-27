@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Final
 
 from etl.core.model import StepFailed
@@ -83,13 +84,22 @@ def pipelines_for(connector: str, scopes: Sequence[str], phases: Sequence[str]) 
     raise NotPorted(f"No v2 pipeline for legacy connector {connector!r}.")
 
 
+def _end_date(end: str) -> str:
+    """`--to` is an exclusive midnight. Legacy's on-demand trigger sends `T-1 23:59:59` to mean
+    the whole of T-1 (its exclusive_day_end), so an end inside a day becomes the next day."""
+    day = end[:10]
+    if len(end) > 10 and end[10:].strip() not in ("", "00:00:00", "00:00"):
+        return (date.fromisoformat(day) + timedelta(days=1)).isoformat()
+    return day
+
+
 def _window(env: Mapping[str, str], pipeline: str) -> list[str]:
     """`--from/--to` from ETL_START_DATE/ETL_END_DATE (date part; a midnight end is
     exclusive in both). The costs mirror takes no window (legacy's 2015-2099 was a full pass)."""
     start, end = env.get("ETL_START_DATE", "").strip(), env.get("ETL_END_DATE", "").strip()
     if pipeline == "costs" or not (start and end):
         return []
-    return ["--from", start[:10], "--to", end[:10]]
+    return ["--from", start[:10], "--to", _end_date(end)]
 
 
 def plan(env: Mapping[str, str]) -> list[list[str]]:

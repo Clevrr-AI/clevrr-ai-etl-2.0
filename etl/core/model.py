@@ -28,7 +28,7 @@ class Mode(StrEnum):
 class Status(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
-    SUCCEEDED = "succeeded"
+    SUCCEEDED = "success"  # legacy's value (D10): the API and the website read it
     FAILED = "failed"
     KILLED = "killed"  # the process died or was stopped; the sweeper also sets it
 

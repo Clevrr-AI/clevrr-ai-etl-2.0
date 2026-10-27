@@ -66,11 +66,23 @@ class InternalApi:
             time.sleep(2**attempt)
         raise ApiError(f"{path} failed after {RETRIES} tries") from last
 
-    def landed(self, *, org_id: str, connector: str, tables: list[str], run_id: str,
-               window: tuple[str, str]) -> None:  # fmt: skip
-        """Tell the API that new data landed (onboarding `historic_done`, cache bump)."""
-        self.post("/api/v2/internal/etl/landed", {"org_id": org_id, "connector": connector,
-                  "tables": tables, "run_id": run_id, "window": list(window)})  # fmt: skip
+    def landed(
+        self,
+        *,
+        org_id: str,
+        provider: str,
+        run_id: str,
+        mode: str,
+        window: tuple[str, str],
+        tables: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Tell the API that a run's data landed (backend-2.0 POST /internal/etl/landed:
+        onboarding `historic_done`, the trial flip, the data-ingested email)."""
+        return self.post("/api/v2/internal/etl/landed", {
+            "org_id": org_id, "provider": provider, "run_id": run_id, "mode": mode,
+            "window_start": window[0], "window_end": window[1],
+            "tables": [{"name": t, "rows": 0} for t in tables or []],
+        })  # fmt: skip
 
 
 def build_api(settings: ApiSettings, http: httpx.Client) -> InternalApi | None:
