@@ -1,0 +1,77 @@
+# `etl tick google_ads` every hour (:00 UTC = :30 IST): runs the google_ads pipelines for the orgs whose
+# etl_schedules interval slot has started (docs/scheduling.md). Same ConfigMap, Secret, SA and
+# node pool as etl-all-google-ads.yaml; activeDeadlineSeconds < 1 h so Forbid skips at most one tick.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-tick-google-ads
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  schedule: "0 * * * *"
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: true
+  timeZone: UTC
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 3500
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            job: etl-tick-google-ads
+        spec:
+          containers:
+          - name: etl
+            image: asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:manual-20261030-sched2
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: CH_PASS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: PG_PASS
+            - name: ETL_COMMAND
+              value: "tick google_ads"
+            - name: POSTGRES_HOST
+              value: "127.0.0.1"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: ORCHESTRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: ORCHESTRA_API_TOKEN
+            - name: ORCHESTRA_CHANNEL_UID
+              value: "5NZSk556rMz6gE4Nol1v"
+            - name: ETL_JOB_NAME
+              value: "etl-tick-google-ads"
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            resources:
+              limits:
+                cpu: "4"
+                memory: 4Gi
+              requests:
+                cpu: "1"
+                memory: 2Gi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool-sbx
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+status: {}

@@ -52,6 +52,10 @@ _WATERMARK = """
 SELECT last_high_watermark FROM etl_watermarks
 WHERE org_id = %(org_id)s AND connector_key = %(source)s AND entity = %(entity)s
 """
+_LAST_RUN = """
+SELECT last_run_at FROM etl_watermarks
+WHERE org_id = %(org_id)s AND connector_key = %(source)s AND entity = %(entity)s
+"""
 _ADVANCE = """
 INSERT INTO etl_watermarks (org_id, connector_key, entity, last_high_watermark, last_run_at, mode)
 VALUES (%(org_id)s, %(source)s, %(entity)s, %(at)s, now(), %(mode)s)
@@ -97,6 +101,7 @@ class Ledger(Protocol):
     def finish_step(self, step_id: int, status: Status, *, result: StepResult | None = None,
                     error: BaseException | None = None) -> None: ...  # fmt: skip
     def watermark(self, org_id: str, source: str, entity: str) -> datetime | None: ...
+    def last_run_at(self, org_id: str, source: str, entity: str) -> datetime | None: ...
     def advance_watermark(self, org_id: str, source: str, entity: str, at: datetime,
                           mode: Mode) -> None: ...  # fmt: skip
 
@@ -151,6 +156,14 @@ class PgLedger:
         params = {"org_id": org_id, "source": source, "entity": entity}
         with self.pool.connection() as conn:
             row = conn.execute(_WATERMARK, params).fetchone()
+        return None if row is None else row[0]
+
+    def last_run_at(self, org_id: str, source: str, entity: str) -> datetime | None:
+        """When the org's last successful incremental run of the pipeline advanced the
+        watermark; None before the first (etl tick's dueness, etl/core/schedules.py)."""
+        params = {"org_id": org_id, "source": source, "entity": entity}
+        with self.pool.connection() as conn:
+            row = conn.execute(_LAST_RUN, params).fetchone()
         return None if row is None else row[0]
 
     def advance_watermark(self, org_id: str, source: str, entity: str, at: datetime,

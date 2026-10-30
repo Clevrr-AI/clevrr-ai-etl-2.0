@@ -14,10 +14,34 @@ account `cloud-sql-proxy` and node pool. The only edit is the image. The v2 imag
 | etl-products-cost (file etl-product-costs.yaml) | `ETL_CONNECTORS=internal`, costs | `run costs` |
 | etl-custom-backfill | `ETL_CONNECTORS`, `ETL_ORG_IDS`, `ETL_START_DATE`, `ETL_END_DATE` | `run <pipeline> --org ... --from ... --to ...` |
 | etl-all-delhivery, etl-all-amazon-ads | parked / dropped | stops with a message (keep them on the legacy image) |
+| etl-tick-shopify, etl-tick-meta-ads, etl-tick-google-ads | `ETL_COMMAND=tick <source>` | `tick <source>`: the due orgs only (below) |
 
 The Cloud SQL proxy runs inside the image (entrypoint.sh), as legacy's did, from
 `CLOUDSQL_INSTANCE` in `etl-config`. Legacy's connection names (`POSTGRES_HOST`, `CKH_HOST`,
 `CLICKHOUSE_CLUSTER`, ...) are translated to the v2 settings.
+
+## Per-org sync frequency: the `etl-tick-*` CronJobs (2026-10-30)
+
+`etl-tick-shopify`, `etl-tick-meta-ads` and `etl-tick-google-ads` run `etl tick <source>` every
+hour (`0 * * * *` UTC = :30 IST) and run each org only when its `etl_schedules` interval slot
+has started (hourly, 4h, 6h, daily ...; no row = daily). They replace `etl-all-shopify`,
+`etl-all-meta-ads` and `etl-all-google-ads`: suspend those when a tick job is unsuspended.
+Design and limits: `docs/scheduling.md`. Both files ship with `suspend: true`.
+
+One-off commands (the migration, setting a schedule, a manual tick) run as a Job from the same
+ConfigMap and Secret through `cronjobs_dev/etl-manual.yaml`:
+
+```bash
+C=--context=gke_clevrr-ai-sbx_asia-south1-a_clevrr-ckh-cluster-sandbox
+IMG=asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:<tag the CronJobs run>
+uv run python scripts/manual_job.py pg-migrate --image $IMG | kubectl apply -n etl $C -f -
+uv run python scripts/manual_job.py "schedule set --org shapercult.com --source shopify --every 4h" --image $IMG   | kubectl apply -n etl $C -f -
+uv run python scripts/manual_job.py "tick shopify" --image $IMG | kubectl apply -n etl $C -f -
+kubectl logs -n etl $C -l job=etl-manual --tail=100
+```
+
+`etl legacy` passes a v2 `ETL_COMMAND` (`tick ...`, `schedule ...`, `pg-migrate`) through
+unchanged, so these Jobs need nothing but the existing `etl-config`.
 
 ## What the cluster needs (one-time, sandbox only)
 
@@ -43,7 +67,32 @@ The Cloud SQL proxy runs inside the image (entrypoint.sh), as legacy's did, from
    `GOOGLE_ADS_CLIENT_ID` etc. live unencrypted in `etl-config`; move them, do not copy).
 4. Nodes: `wi-etl-pool-sbx` autoscales 0-2 (set 2026-10-19); a job waits 2-3 minutes for a node.
 
-Every file keeps `suspend: true`, as in the cluster today. Run one by hand:
+## Taking an org over from legacy (watermarks)
+
+v2 keys a watermark by (source, pipeline name): `shopify-sales`, `meta-ads`, `meta-ads-region`,
+`google-ads`. Legacy used `orders`, `ads`, `ads_region`. Without its rows v2 treats the org as
+new (`first_window`: 3 days for sales, 365 days for Meta). Before the first run, copy legacy's
+last position (done for the first pilot org on 2026-10-21):
+
+```sql
+INSERT INTO etl_watermarks (org_id, connector_key, entity, last_high_watermark, last_run_at, mode)
+SELECT w.org_id, w.connector_key, v.entity, w.last_high_watermark, w.last_run_at, 'incremental'
+FROM etl_watermarks w
+JOIN (VALUES ('shopify', 'orders', 'shopify-sales'),
+             ('meta_ads', 'ads', 'meta-ads'),
+             ('meta_ads', 'ads_region', 'meta-ads-region'),
+             ('google_ads', 'ads', 'google-ads')) AS v(ck, legacy_entity, entity)
+  ON v.ck = w.connector_key AND v.legacy_entity = w.entity
+WHERE w.org_id = '<org>'
+ON CONFLICT (org_id, connector_key, entity) DO NOTHING;
+```
+
+Catalog and costs are full pulls and need no row. Narrow `RUN__ORG_ALLOWLIST` to the orgs
+being taken over; `startingDeadlineSeconds: 600` on every job means unsuspending starts
+nothing, the next scheduled run is the first.
+
+Every file keeps `suspend: true`, as in the cluster today (the sandbox unsuspended four jobs
+for one pilot org on 2026-10-21). Run one by hand:
 
 ```bash
 kubectl create job --from=cronjob/etl-products-cost etl-products-cost-manual -n etl $C

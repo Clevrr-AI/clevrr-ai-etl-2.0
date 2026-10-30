@@ -5,8 +5,11 @@ ad_product_mapping and campaign_structure -> ClickHouse -> check.
 `meta-ads-region`: spend by region (state) -> advertising_geo_daily -> ClickHouse -> check;
 its own watermark, as legacy's `ads_region`.
 
-The run's days are IST dates [window start, window end): legacy's auto window ran from the
-watermark to today 00:00 IST, so today is never fetched. Legacy has no look-back.
+The run's days are IST dates. An incremental run covers [window start, the day after the
+window end): it includes today, so an intraday tick (`etl tick meta_ads`) refreshes today's
+partial figures, and the 3-day look-back re-pulls the days Meta is still attributing. A
+backfill's --to stays exclusive. (Legacy ran from the watermark to today 00:00 IST, never
+fetched today and had no look-back.)
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from psycopg import sql
 from etl.checks.compare import close_figures
 from etl.core import ch
 from etl.core.ch_writer import ChWriter, Slice
-from etl.core.model import Org, Pipeline, RunContext, Step, StepFailed, StepResult, Window
+from etl.core.model import Mode, Org, Pipeline, RunContext, Step, StepFailed, StepResult, Window
 from etl.core.pg_load import run_sql_file
 from etl.sources.meta import sql_meta
 from etl.sources.meta.creatives import page_tokens
@@ -38,8 +41,11 @@ TRANSFORMS = ("meta_advertising.sql", "meta_ad_product_mapping.sql", "meta_campa
 SOURCE = Slice(source_column="source_type", source=sql_meta.SOURCE)
 
 
-def days(window: Window) -> tuple[date, date]:
-    return window.start.astimezone(IST).date(), window.end.astimezone(IST).date()
+def days(mode: Mode, window: Window) -> tuple[date, date]:
+    """IST days [first, end). Incremental: the day the window ends in (today) is included;
+    backfill: the end day is exclusive, as --to says."""
+    first, last = window.start.astimezone(IST).date(), window.end.astimezone(IST).date()
+    return first, (last + timedelta(days=1) if mode is Mode.INCREMENTAL else last)
 
 
 def _midnight(day: date) -> datetime:
@@ -73,7 +79,7 @@ def _graph(ctx: RunContext, org: Org) -> Generator[Graph]:
 
 
 def extract_meta(ctx: RunContext, org: Org, window: Window) -> StepResult:
-    span = days(window)
+    span = days(ctx.mode, window)
     if span[0] >= span[1]:
         return StepResult(detail={"days": 0})
     detail: dict[str, Any] = {"days": [d.isoformat() for d in span]}
@@ -88,14 +94,14 @@ def extract_meta(ctx: RunContext, org: Org, window: Window) -> StepResult:
     return StepResult(fetched, fetched, detail=detail)
 
 
-def _params(org: Org, window: Window) -> dict[str, Any]:
-    first, end = days(window)
+def _params(ctx: RunContext, org: Org, window: Window) -> dict[str, Any]:
+    first, end = days(ctx.mode, window)
     return {"org": org.org_id, "start": _midnight(first), "end": _midnight(end),
             "first_day": first, "end_day": end}  # fmt: skip
 
 
 def transform_meta(ctx: RunContext, org: Org, window: Window) -> StepResult:
-    params = _params(org, window)
+    params = _params(ctx, org, window)
     detail: dict[str, list[int]] = {}
     with ctx.pg.connection() as conn, conn.transaction():
         for name in TRANSFORMS:
@@ -106,7 +112,7 @@ def transform_meta(ctx: RunContext, org: Org, window: Window) -> StepResult:
 def sync_meta(ctx: RunContext, org: Org, window: Window) -> StepResult:
     """Legacy: delete the org's Meta rows (advertising: of the run's days) in ClickHouse,
     then insert; when Postgres has none, keep what ClickHouse has."""
-    params = _params(org, window)
+    params = _params(ctx, org, window)
     writer = ChWriter(ctx.ch, ctx.settings.clickhouse)
     detail: dict[str, int] = {}
     columns = writer.columns("advertising")
@@ -126,7 +132,7 @@ def sync_meta(ctx: RunContext, org: Org, window: Window) -> StepResult:
 
 
 def check_meta(ctx: RunContext, org: Org, window: Window) -> StepResult:
-    params = _params(org, window)
+    params = _params(ctx, org, window)
     labels = ("rows", "spend", "impressions")
     pg = _rows(ctx, sql_meta.PG_ADVERTISING, params)[0]
     close_figures("advertising (raw vs Postgres)", labels,
@@ -144,7 +150,7 @@ def check_meta(ctx: RunContext, org: Org, window: Window) -> StepResult:
 
 
 def extract_region(ctx: RunContext, org: Org, window: Window) -> StepResult:
-    span = days(window)
+    span = days(ctx.mode, window)
     if span[0] >= span[1]:
         return StepResult(detail={"days": 0})
     detail: dict[str, Any] = {"days": [d.isoformat() for d in span]}
@@ -204,10 +210,10 @@ META_ADS = Pipeline(
         Step("sync_meta", sync_meta),
         Step("check_meta", check_meta),
     ),
-    lookback=timedelta(0),  # legacy: from the watermark to today, no look-back
+    lookback=timedelta(days=3),  # Meta keeps attributing for days; re-pull them (legacy: none)
     first_window=timedelta(days=365),  # legacy compute_window(ads, 365)
     timeout=timedelta(hours=2),
-    schedule="30 3 * * *",  # legacy etl-all-meta-ads: 09:00 IST
+    schedule="0 * * * *",  # etl tick meta_ads, hourly; each org on its etl_schedules interval
 )
 META_ADS_REGION = Pipeline(
     name="meta-ads-region",
@@ -218,8 +224,8 @@ META_ADS_REGION = Pipeline(
         Step("sync_geo", sync_geo),
         Step("check_geo", check_geo),
     ),
-    lookback=timedelta(0),
+    lookback=timedelta(days=3),
     first_window=timedelta(days=365),
     timeout=timedelta(hours=1),
-    schedule="30 3 * * *",
+    schedule="0 * * * *",
 )

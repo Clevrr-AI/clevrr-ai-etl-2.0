@@ -7,6 +7,8 @@ cluster run the v2 image unchanged: their ConfigMap `etl-config`, Secret `etl-se
   CLICKHOUSE__CLUSTER, ... The proxy runs in the image (entrypoint.sh), as legacy's did.
 - `ETL_COMMAND` plus `ETL_SCOPES` / `ETL_GROUP_PHASES` / `ETL_CONNECTORS` / `ETL_ORG_IDS` /
   `ETL_START_DATE` / `ETL_END_DATE` become one or more `etl run ...` invocations (`plan`).
+  An `ETL_COMMAND` that is already a v2 command (`tick meta_ads`, `schedule set ...`,
+  `pg-migrate`) runs unchanged, so the new CronJobs and one-off Jobs share this boundary.
 - Parity guard: until `ETL_V2_CUTOVER=true`, a run whose targets are legacy's own tables
   (`public`, `clevrr_db`) is refused, so a job with no target settings cannot double-write.
 
@@ -16,6 +18,7 @@ This module reads the environment, like etl/core/settings.py: it is the legacy b
 from __future__ import annotations
 
 import os
+import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -47,6 +50,10 @@ NOT_PORTED: Final[dict[str, str]] = {
     "amazon_ads": "Amazon Ads is not ported (decision 2026-10-17).",
 }
 TRUE: Final = frozenset({"1", "true", "yes"})
+# An ETL_COMMAND that already is a v2 command runs as it is (the etl-tick-* CronJobs and the
+# one-off etl-manual Job): the same ConfigMap and name translation, no legacy mapping.
+V2_COMMANDS: Final = frozenset({"tick", "schedule", "run", "sweep", "pg-migrate", "ch-migrate",
+                                "list"})  # fmt: skip
 
 
 class NotPorted(StepFailed):
@@ -104,7 +111,9 @@ def _window(env: Mapping[str, str], pipeline: str) -> list[str]:
 
 def plan(env: Mapping[str, str]) -> list[list[str]]:
     """The `etl` invocations for one legacy job's settings."""
-    command = env.get("ETL_COMMAND", "").split()
+    command = shlex.split(env.get("ETL_COMMAND", ""))
+    if command[:1] and command[0] in V2_COMMANDS:
+        return [command]
     if command[:1] == ["run-all-for-connector"] and len(command) > 1:
         connectors = [command[1]]
     elif command[:1] in (["run-from-env"], []):

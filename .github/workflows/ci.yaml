@@ -85,7 +85,9 @@ jobs:
           location: ${{ vars.GKE_ZONE || 'asia-south1-a' }}
       - name: Move the existing etl-all-* CronJobs to the new image
         run: |
-          for job in etl-all-shopify etl-all-shopify-catalog-daily etl-all-shopify-products               etl-all-meta-ads etl-all-google-ads etl-products-cost etl-custom-backfill; do
+          for job in etl-all-shopify etl-all-shopify-catalog-daily etl-all-shopify-products \
+              etl-all-meta-ads etl-all-google-ads etl-products-cost etl-custom-backfill \
+              etl-tick-shopify etl-tick-meta-ads etl-tick-google-ads; do
             kubectl set image cronjob/"$job" -n etl etl="$IMAGE:${GITHUB_SHA}"
           done
       - name: Move the two migrate Cloud Run Jobs too (infra/jobs.tf)

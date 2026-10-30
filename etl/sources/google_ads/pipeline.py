@@ -2,8 +2,10 @@
 the datasets per customer -> advertising, ad_product_mapping, google_ads_product_performance
 -> ClickHouse -> check. The click map goes straight to ClickHouse `google_click_map`.
 
-The run's days are IST dates [window start, window end), like Meta (legacy: from the watermark
-to today 00:00 IST; first run 3650 days, here a backfill run instead).
+The run's days are IST dates, like Meta: an incremental run includes today (an intraday
+`etl tick google_ads` refreshes today's partial figures) and re-pulls a 3-day look-back for
+late conversions; a backfill's --to stays exclusive. (Legacy: from the watermark to today
+00:00 IST, no look-back; first run 3650 days, here a backfill run instead.)
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from etl.checks.compare import close_figures
 from etl.core import ch
 from etl.core.ch_writer import ChWriter, Slice
 from etl.core.logging import get_logger
-from etl.core.model import Org, Pipeline, RunContext, Step, StepFailed, StepResult, Window
+from etl.core.model import Mode, Org, Pipeline, RunContext, Step, StepFailed, StepResult, Window
 from etl.core.pg_load import run_sql_file
 from etl.sources.google_ads import sql_google
 from etl.sources.google_ads.api import GoogleAds, refresh_token
@@ -35,12 +37,15 @@ TRANSFORMS = ("google_advertising.sql", "google_ad_product_mapping.sql",
               "google_product_performance.sql")  # fmt: skip
 
 
-def days(window: Window) -> tuple[date, date]:
-    return window.start.astimezone(IST).date(), window.end.astimezone(IST).date()
+def days(mode: Mode, window: Window) -> tuple[date, date]:
+    """IST days [first, end). Incremental: the day the window ends in (today) is included;
+    backfill: the end day is exclusive, as --to says."""
+    first, last = window.start.astimezone(IST).date(), window.end.astimezone(IST).date()
+    return first, (last + timedelta(days=1) if mode is Mode.INCREMENTAL else last)
 
 
-def _params(org: Org, window: Window) -> dict[str, Any]:
-    first, end = days(window)
+def _params(ctx: RunContext, org: Org, window: Window) -> dict[str, Any]:
+    first, end = days(ctx.mode, window)
     return {"org": org.org_id, "start": datetime.combine(first, time(), UTC),
             "end": datetime.combine(end, time(), UTC)}  # fmt: skip
 
@@ -74,7 +79,7 @@ def _client(ctx: RunContext, org: Org, http: httpx.Client) -> GoogleAds:
 
 
 def extract_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
-    span = days(window)
+    span = days(ctx.mode, window)
     if span[0] >= span[1]:
         return StepResult(detail={"days": 0})
     detail: dict[str, Any] = {"days": [d.isoformat() for d in span]}
@@ -105,7 +110,7 @@ def extract_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
 
 
 def transform_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
-    params = _params(org, window)
+    params = _params(ctx, org, window)
     detail: dict[str, list[int]] = {}
     with ctx.pg.connection() as conn, conn.transaction():
         for name in TRANSFORMS:
@@ -116,7 +121,7 @@ def transform_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
 def sync_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
     """Legacy: delete the org's rows (advertising and product performance: of the run's days)
     in ClickHouse, then insert; when Postgres has none, keep what ClickHouse has."""
-    params = _params(org, window)
+    params = _params(ctx, org, window)
     writer = ChWriter(ctx.ch, ctx.settings.clickhouse)
     detail: dict[str, int] = {}
     plan = (
@@ -139,7 +144,7 @@ def sync_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
 
 
 def check_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
-    params = _params(org, window)
+    params = _params(ctx, org, window)
     wall = {"org": org.org_id, "start": _wall(params["start"]), "end": _wall(params["end"])}
     utc = {"org": org.org_id, "start": _utc_naive(params["start"]),
            "end": _utc_naive(params["end"])}  # fmt: skip
@@ -168,8 +173,8 @@ GOOGLE_ADS = Pipeline(
         Step("sync_google", sync_google),
         Step("check_google", check_google),
     ),
-    lookback=timedelta(0),  # legacy: from the watermark to today, no look-back
+    lookback=timedelta(days=3),  # conversions land up to 15 h late; re-pull (legacy: none)
     first_window=timedelta(days=30),  # legacy took 3650 days; history comes from a backfill run
     timeout=timedelta(hours=2),
-    schedule="0 4 * * *",  # legacy etl-all-google-ads: 09:30 IST
+    schedule="0 * * * *",  # etl tick google_ads, hourly; each org on its etl_schedules interval
 )

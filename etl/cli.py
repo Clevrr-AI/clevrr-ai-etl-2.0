@@ -1,6 +1,8 @@
 """The `etl` command (one entry point for every Cloud Run Job and every local run).
 
     etl run <pipeline> [--org ID ...] [--from YYYY-MM-DD --to YYYY-MM-DD]
+    etl tick <source>    run the source's pipelines for the orgs whose interval is due
+    etl schedule list|set|unset   per-org sync intervals (etl_schedules)
     etl sweep            mark stale `running` runs `killed`
     etl legacy           run from legacy's CronJob settings (ETL_COMMAND, ETL_* ...)
     etl pg-migrate       apply pending Postgres migrations (alembic) to the target schema
@@ -29,13 +31,15 @@ from etl.core.alerts import build_alerts
 from etl.core.api_client import ApiError, InternalApi, build_api
 from etl.core.ch_migrate import migrate
 from etl.core.connector_table import TableConnectorSource
-from etl.core.connectors import shard
+from etl.core.connectors import select_orgs
 from etl.core.db import open_clickhouse, open_pg_pool
 from etl.core.logging import configure_logging, get_logger
-from etl.core.model import Org, Pipeline, Status
+from etl.core.model import Pipeline, Status
 from etl.core.run_ledger import PgLedger
+from etl.core.schedules import ScheduleTable, parse_every
 from etl.core.settings import Settings, load_settings
 from etl.runner import Runner, RunSummary
+from etl.scheduler import SCHEDULED, tick
 
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 log = get_logger(__name__)
@@ -53,6 +57,9 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--org", action="append", default=[], help="org id; repeat; default all")
     run.add_argument("--from", dest="start", type=_day, help="backfill start day (UTC)")
     run.add_argument("--to", dest="end", type=_day, help="backfill end day (UTC, exclusive)")
+    tick_ = sub.add_parser("tick", help="run a source's pipelines for the orgs that are due")
+    tick_.add_argument("source", choices=sorted(SCHEDULED))
+    _schedule_parser(sub.add_parser("schedule", help="per-org sync intervals"))
     sub.add_parser("sweep", help="mark stale running runs killed")
     sub.add_parser("pg-migrate", help="apply pending Postgres migrations to the target schema")
     sub.add_parser("legacy", help="run from legacy's CronJob settings (ETL_COMMAND, ETL_*)")
@@ -61,12 +68,20 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def select_orgs(found: Sequence[Org], wanted: Sequence[str], settings: Settings) -> list[Org]:
-    orgs = [o for o in found if not wanted or o.org_id in wanted]
-    allow = settings.run.org_allowlist
-    if allow:
-        orgs = [o for o in orgs if o.org_id in allow]
-    return shard(orgs, index=settings.task_index, count=settings.task_count)
+def _schedule_parser(parser: argparse.ArgumentParser) -> None:
+    sub = parser.add_subparsers(dest="action", required=True)
+    listing = sub.add_parser("list", help="the schedules (orgs with no row run daily)")
+    listing.add_argument("--source", help="one source only")
+    set_ = sub.add_parser("set", help="set an org's interval for a source")
+    set_.add_argument("--org", required=True)
+    set_.add_argument("--source", required=True, choices=sorted(SCHEDULED))
+    set_.add_argument("--every", required=True, type=parse_every,
+                      help="1h, 2h, 3h, 4h, 6h, 8h, 12h or daily")  # fmt: skip
+    set_.add_argument("--paused", action="store_true", help="keep the row, run nothing")
+    set_.add_argument("--note", help="why (free text)")
+    unset = sub.add_parser("unset", help="remove the row: the org runs daily again")
+    unset.add_argument("--org", required=True)
+    unset.add_argument("--source", required=True, choices=sorted(SCHEDULED))
 
 
 def _on_sigterm(signum: int, frame: FrameType | None) -> None:
@@ -107,6 +122,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             killed = ledger.sweep(settings.run.stale_after_s)
             log.info("etl.swept", killed=len(killed))
             return 0
+        if args.command == "schedule":
+            return _schedule(args, ScheduleTable(pool))
+        if args.command == "tick":
+            return _tick(args.source, settings, ledger)
         return _run(args, settings, ledger)
     finally:
         pool.close()
@@ -149,6 +168,47 @@ def _signal_landed(api: InternalApi | None, pipeline: Pipeline, summary: RunSumm
                        window=window, tables=[pipeline.name])  # fmt: skip
         except (ApiError, httpx.HTTPError) as exc:
             log.warning("etl.landed_failed", org_id=outcome.org_id, error_type=type(exc).__name__)
+
+
+def _tick(source: str, settings: Settings, ledger: PgLedger) -> int:
+    found = TableConnectorSource(ledger.pool).orgs(source)
+    orgs = select_orgs(found, [], settings)
+    schedules = ScheduleTable(ledger.pool).for_source(source)
+    ch = open_clickhouse(settings.clickhouse)
+    with httpx.Client() as http:
+        runner = Runner(settings, ledger.pool, ch, ledger, build_alerts(settings.alerts, http))
+        log.info("etl.tick_started", source=source, orgs=len(orgs), schedules=len(schedules),
+                 task=f"{settings.task_index}/{settings.task_count}")  # fmt: skip
+        summaries = tick(source, orgs, schedules, runner, ledger)
+        api = build_api(settings.api, http)
+        for summary in summaries:
+            _signal_landed(api, pipelines.get(summary.pipeline), summary)
+    ch.close()
+    failed = sum(len(s.failed) for s in summaries)
+    log.info("etl.tick_finished", source=source, ran=[s.pipeline for s in summaries],
+             failed=failed)  # fmt: skip
+    return 0 if failed == 0 else 1
+
+
+def _schedule(args: argparse.Namespace, table: ScheduleTable) -> int:
+    out = sys.stdout
+    if args.action == "set":
+        row = table.set(args.org, args.source, args.every, enabled=not args.paused,
+                        note=args.note)  # fmt: skip
+        out.write(f"{row.org_id}\t{row.source}\t{'paused' if args.paused else row.every}\n")
+        return 0
+    if args.action == "unset":
+        removed = table.unset(args.org, args.source)
+        out.write(f"{args.org}\t{args.source}\t{'daily (row removed)' if removed else 'no row'}\n")
+        return 0
+    rows = [r for r in table.all() if not args.source or r.source == args.source]
+    out.write("org_id\tsource\tevery\tenabled\tupdated_at\tnote\n")
+    for r in rows:
+        when = r.updated_at.isoformat(timespec="minutes") if r.updated_at else ""
+        out.write(f"{r.org_id}\t{r.source}\t{r.every}\t{r.enabled}\t{when}\t{r.note or ''}\n")
+    if not rows:
+        out.write("(no rows: every org runs daily)\n")
+    return 0
 
 
 if __name__ == "__main__":
