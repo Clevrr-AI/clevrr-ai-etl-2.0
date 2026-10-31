@@ -93,6 +93,13 @@ Legacy behaviour that v2 copies on purpose, so the parity checks compare like wi
 
 Newest first. One entry per task.
 
+### 2026-10-31 · `etl-ai-overview` widened to every org (the API queues on Cloud Tasks now)
+- Phase: 7.5 · Area: cronjobs_dev, sandbox cluster config · Type: change · Risk: low
+- Changed: `ETL_COMMAND` back to `ai-overview` (no `--org` list): the sandbox API runs its tasks on Cloud Tasks and the worker service since 2026-10-31 (backend-2.0 change log), so the trigger answers in about a second and the API's 4-day activity gate picks the orgs. Applied on the cluster and unsuspended again (the file ships `suspend: true`, so every `kubectl apply` of it needs the unsuspend patch after).
+- Why: The pilot-org limit existed only for the inline-task period.
+- Files: cronjobs_dev/etl-ai-overview.yaml, CLAUDE.md
+- Verify: `etl-manual-20261031-043355` (`ai-overview --force --org shapercult.com`): `etl.ai_overview_started queued=1`, exit code 0; the worker's log shows `ai_overview_done status=done cards=overview;sales;attention` 74 s later and the queue is empty. Not checked: the first scheduled 01:00 UTC fire over every org.
+
 ### 2026-10-31 · `etl-ai-overview` applied and unsuspended on the sandbox (pilot orgs)
 - Phase: 7.5 · Area: cronjobs_dev, sandbox cluster config · Type: change · Risk: low (one API call a night for three orgs)
 - Changed: `cronjobs_dev/etl-ai-overview.yaml` now carries the CI image tag `b122bf68...` (the first image with the `ai-overview` command) and `ETL_COMMAND=ai-overview --org shapercult.com --org legendoftoys.com --org mydesignation.com`: the sandbox API still runs tasks inline, so every org named runs inside the one trigger request, and three is the limit that fits. Cluster: `etl-config` got `API__BASE_URL=https://api-sbx.getclevrr.com` and `API__AUDIENCE=https://api-sbx.getclevrr.com`; the CronJob was applied and unsuspended (`0 1 * * *` UTC). The API allows the CronJobs' Workload Identity account `gke-etl-cloudsql@clevrr-ai.iam.gserviceaccount.com` (backend-2.0 change log, 2026-10-31).
