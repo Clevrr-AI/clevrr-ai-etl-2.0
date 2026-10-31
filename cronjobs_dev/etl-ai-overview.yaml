@@ -29,7 +29,7 @@ spec:
         spec:
           containers:
           - name: etl
-            image: asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:manual-20261030-sched2
+            image: asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:b122bf686a26a4daf4e44cf7ec61db61f521d95f
             imagePullPolicy: IfNotPresent
             env:
             - name: CKH_PASSWORD
@@ -42,8 +42,10 @@ spec:
                 secretKeyRef:
                   name: etl-secrets
                   key: PG_PASS
+            # Sandbox: the pilot orgs only. Tasks run inline in the sandbox API (no Cloud Tasks
+            # yet), so every org named here runs inside the one trigger request.
             - name: ETL_COMMAND
-              value: "ai-overview"
+              value: "ai-overview --org shapercult.com --org legendoftoys.com --org mydesignation.com"
             - name: POSTGRES_HOST
               value: "127.0.0.1"
             - name: POSTGRES_PORT
