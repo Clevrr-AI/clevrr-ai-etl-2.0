@@ -2,6 +2,7 @@
 
     etl run <pipeline> [--org ID ...] [--from YYYY-MM-DD --to YYYY-MM-DD]
     etl tick <source>    run the source's pipelines for the orgs whose interval is due
+    etl ai-overview      start the API's nightly AI Overview (after the night's data landed)
     etl schedule list|set|unset   per-org sync intervals (etl_schedules)
     etl sweep            mark stale `running` runs `killed`
     etl legacy           run from legacy's CronJob settings (ETL_COMMAND, ETL_* ...)
@@ -59,6 +60,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--to", dest="end", type=_day, help="backfill end day (UTC, exclusive)")
     tick_ = sub.add_parser("tick", help="run a source's pipelines for the orgs that are due")
     tick_.add_argument("source", choices=sorted(SCHEDULED))
+    ai = sub.add_parser("ai-overview", help="start the API's nightly AI Overview job")
+    ai.add_argument("--day", help="the IST day to compute for (YYYY-MM-DD); default today")
+    ai.add_argument("--org", action="append", default=[], help="org id; repeat; default all")
+    ai.add_argument("--force", action="store_true", help="skip the 4-day activity gate")
     _schedule_parser(sub.add_parser("schedule", help="per-org sync intervals"))
     sub.add_parser("sweep", help="mark stale running runs killed")
     sub.add_parser("pg-migrate", help="apply pending Postgres migrations to the target schema")
@@ -114,6 +119,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             client.close()
         log.info("etl.ch_migrate_done", applied=applied, database=settings.clickhouse.database)
         return 0
+    if args.command == "ai-overview":
+        return _ai_overview(args, settings)
     signal.signal(signal.SIGTERM, _on_sigterm)
     pool = open_pg_pool(settings.postgres)
     try:
@@ -168,6 +175,26 @@ def _signal_landed(api: InternalApi | None, pipeline: Pipeline, summary: RunSumm
                        window=window, tables=[pipeline.name])  # fmt: skip
         except (ApiError, httpx.HTTPError) as exc:
             log.warning("etl.landed_failed", org_id=outcome.org_id, error_type=type(exc).__name__)
+
+
+def _ai_overview(args: argparse.Namespace, settings: Settings) -> int:
+    """Start the API's nightly AI Overview, Sales metrics and Ads-that-need-attention cards.
+    The API picks the orgs (data sources, users active in the last 4 days) and queues one
+    job per org; this command only tells it the night's data has landed. Needs API__*."""
+    with httpx.Client() as http:
+        api = build_api(settings.api, http)
+        if api is None:
+            log.error("etl.ai_overview_no_api", hint="set API__BASE_URL and API__AUDIENCE")
+            return 1
+        try:
+            out = api.ai_overview_run(day=args.day, force=args.force, org_ids=args.org)
+        except (ApiError, httpx.HTTPError) as exc:
+            log.error("etl.ai_overview_failed", error_type=type(exc).__name__)
+            return 1
+    queued, skipped = list(out.get("queued") or []), dict(out.get("skipped") or {})
+    log.info("etl.ai_overview_started", day=out.get("day"), queued=len(queued),
+             skipped=len(skipped), skipped_reasons=sorted(set(skipped.values())))  # fmt: skip
+    return 0
 
 
 def _tick(source: str, settings: Settings, ledger: PgLedger) -> int:

@@ -15,6 +15,7 @@ account `cloud-sql-proxy` and node pool. The only edit is the image. The v2 imag
 | etl-custom-backfill | `ETL_CONNECTORS`, `ETL_ORG_IDS`, `ETL_START_DATE`, `ETL_END_DATE` | `run <pipeline> --org ... --from ... --to ...` |
 | etl-all-delhivery, etl-all-amazon-ads | parked / dropped | stops with a message (keep them on the legacy image) |
 | etl-tick-shopify, etl-tick-meta-ads, etl-tick-google-ads | `ETL_COMMAND=tick <source>` | `tick <source>`: the due orgs only (below) |
+| etl-ai-overview | `ETL_COMMAND=ai-overview` | `ai-overview`: tells the API the night's data landed; the API computes the morning's AI cards (docs/scheduling.md) |
 
 The Cloud SQL proxy runs inside the image (entrypoint.sh), as legacy's did, from
 `CLOUDSQL_INSTANCE` in `etl-config`. Legacy's connection names (`POSTGRES_HOST`, `CKH_HOST`,
@@ -42,6 +43,17 @@ kubectl logs -n etl $C -l job=etl-manual --tail=100
 
 `etl legacy` passes a v2 `ETL_COMMAND` (`tick ...`, `schedule ...`, `pg-migrate`) through
 unchanged, so these Jobs need nothing but the existing `etl-config`.
+
+## The nightly AI Overview trigger: `etl-ai-overview` (2026-10-31)
+
+`etl-ai-overview` runs `etl ai-overview` once a night (`0 1 * * *` UTC = 06:30 IST, after the
+daily ticks) and calls backend 2.0's `POST /api/v2/internal/ai-overview/run`. The API queues
+one `ai_overview_nightly` worker job per org with data sources whose users were active in the
+last 4 days, and that job writes the AI Overview, Sales metrics and Ads-that-need-attention
+cards the web app shows in the morning. The job needs `API__BASE_URL` and `API__AUDIENCE` in
+`etl-config` (the landed signal's keys) and the ETL service account in the API's
+`INTERNAL__ALLOWED_SERVICE_ACCOUNTS`. Ships with `suspend: true`. A manual run:
+`uv run python scripts/manual_job.py "ai-overview --force --org shapercult.com" --image $IMG | kubectl apply -n etl $C -f -`.
 
 ## What the cluster needs (one-time, sandbox only)
 

@@ -84,6 +84,17 @@ class InternalApi:
             "tables": [{"name": t, "rows": 0} for t in tables or []],
         })  # fmt: skip
 
+    def ai_overview_run(
+        self, *, day: str | None = None, force: bool = False, org_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Start the nightly AI Overview (backend-2.0 POST /internal/ai-overview/run): the API
+        queues one job per org with data sources whose users were active in the last 4 days
+        and answers with the orgs queued and the orgs skipped (with the reason)."""
+        body: dict[str, Any] = {"force": force, "org_ids": list(org_ids or [])}
+        if day:
+            body["day"] = day
+        return self.post("/api/v2/internal/ai-overview/run", body)
+
 
 def build_api(settings: ApiSettings, http: httpx.Client) -> InternalApi | None:
     if not settings.base_url:

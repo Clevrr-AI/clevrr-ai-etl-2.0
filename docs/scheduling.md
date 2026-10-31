@@ -61,3 +61,21 @@ daily org runs twice a night (harmless, idempotent, but wasted API calls).
 - A tick's Job has `activeDeadlineSeconds: 3500` and `concurrencyPolicy: Forbid`, so a long
   run skips at most one hourly tick. A run killed by the deadline does not advance the
   watermark and is retried at the next tick.
+
+## The nightly AI Overview trigger (`etl ai-overview`, 2026-10-31)
+
+The morning's AI Overview, Sales metrics and Ads-that-need-attention cards are computed in
+the night by backend 2.0 (`app/agents/overview`), not at page load. The ETL only says when
+the night's data has landed: the `etl-ai-overview` CronJob runs `etl ai-overview` once a
+night at 01:00 UTC (06:30 IST), after the 00:30 IST daily ticks have finished, and calls
+`POST /api/v2/internal/ai-overview/run` with the ETL's OIDC token (`API__BASE_URL` and
+`API__AUDIENCE`, the same keys as the landed signal). The API picks the orgs: every active
+org with a Shopify, Meta or Google connector whose users signed in or kept a session alive
+in the last 4 days. The others get a `skipped` run (`inactive_4d`), so no model spend goes to
+a brand nobody is reading. One worker job per org then reads the last 28 days of ads at ad
+grain, the account metrics against the 14 days before, the pixel channels and today's
+budgets, runs the detectors, and writes the three cards.
+
+Manual runs: `etl ai-overview --force` ignores the 4-day gate; `--org a.com --org b.com`
+limits the orgs; `--day YYYY-MM-DD` names the IST day to compute for. Through the one-off
+Job: `scripts/manual_job.py "ai-overview --force --org shapercult.com"`.

@@ -1,0 +1,80 @@
+# `etl ai-overview` once a night (01:00 UTC = 06:30 IST): tells backend 2.0 the night's data has
+# landed, and the API computes the AI Overview, Sales metrics and Ads-that-need-attention cards
+# for every org with data sources whose users were active in the last 4 days (one worker job
+# per org). Runs after the daily ticks (00:30 IST) have finished; it needs API__BASE_URL and
+# API__AUDIENCE in etl-config (the same keys the landed signal uses). Same ConfigMap, Secret, SA
+# and node pool as the tick jobs; no Postgres or ClickHouse work of its own.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl-ai-overview
+  namespace: etl
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 3
+  schedule: "0 1 * * *"
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  suspend: true
+  timeZone: UTC
+  jobTemplate:
+    metadata: {}
+    spec:
+      activeDeadlineSeconds: 900
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            job: etl-ai-overview
+        spec:
+          containers:
+          - name: etl
+            image: asia-south1-docker.pkg.dev/clevrr-ai-sbx/clevrr-registry-sbx/clevrr-etl-v2:manual-20261030-sched2
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: CKH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: CH_PASS
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: PG_PASS
+            - name: ETL_COMMAND
+              value: "ai-overview"
+            - name: POSTGRES_HOST
+              value: "127.0.0.1"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: ORCHESTRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: etl-secrets
+                  key: ORCHESTRA_API_TOKEN
+            - name: ORCHESTRA_CHANNEL_UID
+              value: "5NZSk556rMz6gE4Nol1v"
+            - name: ETL_JOB_NAME
+              value: "etl-ai-overview"
+            envFrom:
+            - configMapRef:
+                name: etl-config
+            resources:
+              limits:
+                cpu: "1"
+                memory: 1Gi
+              requests:
+                cpu: "250m"
+                memory: 512Mi
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          nodeSelector:
+            cloud.google.com/gke-nodepool: wi-etl-pool-sbx
+          restartPolicy: Never
+          schedulerName: default-scheduler
+          securityContext: {}
+          serviceAccountName: cloud-sql-proxy
+          terminationGracePeriodSeconds: 30
+status: {}

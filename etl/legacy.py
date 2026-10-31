@@ -53,7 +53,7 @@ TRUE: Final = frozenset({"1", "true", "yes"})
 # An ETL_COMMAND that already is a v2 command runs as it is (the etl-tick-* CronJobs and the
 # one-off etl-manual Job): the same ConfigMap and name translation, no legacy mapping.
 V2_COMMANDS: Final = frozenset({"tick", "schedule", "run", "sweep", "pg-migrate", "ch-migrate",
-                                "list"})  # fmt: skip
+                                "list", "ai-overview"})  # fmt: skip
 
 
 class NotPorted(StepFailed):
