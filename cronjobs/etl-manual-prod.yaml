@@ -1,0 +1,75 @@
+# One-off Job template for a v2 command on PROD (schedule set ..., schedule list, run ...).
+# Not applied as is: `scripts/manual_job.py --prod` fills ETL_COMMAND and a unique name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-manual-__SUFFIX__
+  namespace: etl
+spec:
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: 'false'
+      labels:
+        job: etl-manual
+    spec:
+      priorityClassName: etl-critical
+      containers:
+      - name: etl
+        image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CKH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: CH_PASS
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: PG_PASS
+        - name: ETL_COMMAND
+          value: "__COMMAND__"
+        - name: POSTGRES_HOST
+          value: 127.0.0.1
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: ORCHESTRA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: ORCHESTRA_API_TOKEN
+        - name: ORCHESTRA_CHANNEL_UID
+          value: HBO1jKzlVsv1hyuRJVl7
+        - name: ETL_JOB_NAME
+          value: etl-manual-__SUFFIX__
+        - name: CLOUDSQL_INSTANCE
+          value: clevrr-ai:asia-south1:clevrr-psql-db-prod
+        - name: ETL_V2_CUTOVER
+          value: 'true'
+        - name: CLICKHOUSE__CLUSTER
+          value: clevrr-cluster
+        envFrom:
+        - configMapRef:
+            name: etl-config
+        resources:
+          limits:
+            cpu: 1500m
+            memory: 4Gi
+          requests:
+            cpu: '1'
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        cloud.google.com/gke-nodepool: wi-etl-pool
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: cloud-sql-proxy
+      terminationGracePeriodSeconds: 30

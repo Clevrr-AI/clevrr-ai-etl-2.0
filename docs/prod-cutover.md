@@ -121,9 +121,19 @@ Good: `etl-all-meta-ads` SUSPEND True, `etl-tick-meta-ads` SUSPEND False. Every 
 daily (no `etl_schedules` row); the adopted watermarks say "ran this slot", so the first
 v2 runs are the 00:30 IST tick, legacy's time. Ticks before that start and skip every org.
 
-**08. Intervals.** `08-schedule-list.yaml` lists them (read-only). To change one, edit its
-`ETL_COMMAND` to e.g. `schedule set --org poetrique.com --source meta_ads --every 4h`, give
-the Job a new name, and apply it.
+**08. Intervals.** One command per org and source, from `clevrr-ai-etl-2.0` (it renders a
+one-off prod Job from `cronjobs/etl-manual-prod.yaml`). Allowed: 1h, 2h, 3h, 4h, 6h, 8h, 12h,
+daily. Slots start at 00:00 IST and each run lands at :30, e.g. 4h = 00:30, 04:30 ... 20:30 IST.
+Only sources whose tick is on in prod take effect (Meta, until Shopify and Google move).
+
+```
+cd C:\Users\HP\clevrr\clevrr-ai-etl-2.0
+uv run python scripts/manual_job.py "schedule set --org poetrique.com --source meta_ads --every 4h" --prod | kubectl apply -f - --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod
+uv run python scripts/manual_job.py "schedule list" --prod | kubectl apply -f - --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod
+kubectl logs -l job=etl-manual -n etl --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod --tail=20
+```
+
+Back to daily: `schedule unset --org <org> --source meta_ads`. Pause one org: add `--paused`.
 
 ## Rollback (Meta)
 
