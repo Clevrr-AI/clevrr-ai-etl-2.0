@@ -1,0 +1,76 @@
+# PROD cut-over step 08-schedule-list: Read-only: the per-org sync intervals (no row = daily). Edit the ETL_COMMAND to `schedule set --org <org> --source meta_ads --every 4h` to change one.
+# Apply: kubectl apply --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -f <this file>
+# Runbook: docs/prod-cutover.md. A Job runs once: delete it before applying it again.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-cutover-08-schedule-list
+  namespace: etl
+spec:
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: 'false'
+      labels:
+        job: etl-cutover-08-schedule-list
+    spec:
+      priorityClassName: etl-critical
+      containers:
+      - name: etl
+        image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CKH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: CH_PASS
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: PG_PASS
+        - name: ETL_COMMAND
+          value: schedule list
+        - name: POSTGRES_HOST
+          value: 127.0.0.1
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: ORCHESTRA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: ORCHESTRA_API_TOKEN
+        - name: ORCHESTRA_CHANNEL_UID
+          value: HBO1jKzlVsv1hyuRJVl7
+        - name: ETL_JOB_NAME
+          value: etl-cutover-08-schedule-list
+        - name: CLOUDSQL_INSTANCE
+          value: clevrr-ai:asia-south1:clevrr-psql-db-prod
+        - name: ETL_V2_CUTOVER
+          value: 'true'
+        - name: CLICKHOUSE__CLUSTER
+          value: clevrr-cluster
+        envFrom:
+        - configMapRef:
+            name: etl-config
+        resources:
+          limits:
+            cpu: 1500m
+            memory: 4Gi
+          requests:
+            cpu: '1'
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        cloud.google.com/gke-nodepool: wi-etl-pool
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: cloud-sql-proxy
+      terminationGracePeriodSeconds: 30

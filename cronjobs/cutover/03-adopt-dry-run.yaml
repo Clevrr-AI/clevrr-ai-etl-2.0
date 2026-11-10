@@ -1,0 +1,162 @@
+# PROD cut-over step 03-adopt-dry-run: Read-only: the Meta v2 watermark rows step 04 would insert (rolled back).
+# Apply: kubectl apply --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -f <this file>
+# Runbook: docs/prod-cutover.md. A Job runs once: delete it before applying it again.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-cutover-03-adopt-dry-run
+  namespace: etl
+spec:
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: 'false'
+      labels:
+        job: etl-cutover-03-adopt-dry-run
+    spec:
+      priorityClassName: etl-critical
+      containers:
+      - name: etl
+        image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CKH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: CH_PASS
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: PG_PASS
+        - name: ETL_COMMAND
+          value: none
+        - name: POSTGRES_HOST
+          value: 127.0.0.1
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: ORCHESTRA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: ORCHESTRA_API_TOKEN
+        - name: ORCHESTRA_CHANNEL_UID
+          value: HBO1jKzlVsv1hyuRJVl7
+        - name: ETL_JOB_NAME
+          value: etl-cutover-03-adopt-dry-run
+        - name: CLOUDSQL_INSTANCE
+          value: clevrr-ai:asia-south1:clevrr-psql-db-prod
+        - name: ETL_V2_CUTOVER
+          value: 'true'
+        - name: CLICKHOUSE__CLUSTER
+          value: clevrr-cluster
+        - name: DRY_RUN
+          value: 'true'
+        - name: ADOPT_SOURCES
+          value: meta_ads
+        - name: JOB_SCRIPT
+          value: |
+            """Give every org v2 watermarks from legacy's (cronjobs_dev/README.md): orders -> shopify-sales,
+            ads -> meta-ads, ads_region -> meta-ads-region, ads (google) -> google-ads. Existing v2 rows are
+            kept (ON CONFLICT DO NOTHING). last_run_at = now(), so a daily org's first v2 run is the next
+            00:30 IST tick, not the first tick after the cut-over. An org with no legacy ads_region row
+            takes its ads watermark for meta-ads-region too (else the region feed's first run is a year).
+            DRY_RUN=true rolls the inserts back."""
+
+            import os
+            import socket
+            import time
+
+            import psycopg
+
+            from etl import legacy
+            from etl.core.db import pg_conninfo
+            from etl.core.settings import load_settings
+
+            for _ in range(120):
+                try:
+                    socket.create_connection(("127.0.0.1", 5432), 1).close()
+                    break
+                except OSError:
+                    time.sleep(1)
+            os.environ.update(legacy.translate_env(os.environ))
+            s = load_settings()
+            dry = os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
+            sources = os.environ.get("ADOPT_SOURCES", "shopify meta_ads google_ads").split()
+            ADOPT = """
+            INSERT INTO public.etl_watermarks (org_id, connector_key, entity, last_high_watermark,
+                last_run_at, mode)
+            SELECT w.org_id, w.connector_key, v.entity, w.last_high_watermark, now(), 'incremental'
+            FROM public.etl_watermarks w
+            JOIN (VALUES ('shopify', 'orders', 'shopify-sales'), ('meta_ads', 'ads', 'meta-ads'),
+                         ('meta_ads', 'ads_region', 'meta-ads-region'),
+                         ('google_ads', 'ads', 'google-ads')) AS v(ck, legacy_entity, entity)
+              ON v.ck = w.connector_key AND v.legacy_entity = w.entity
+            WHERE w.last_high_watermark IS NOT NULL AND w.connector_key = ANY(%(src)s)
+            ON CONFLICT (org_id, connector_key, entity) DO NOTHING
+            RETURNING org_id, entity, last_high_watermark
+            """
+            REGION_FALLBACK = """
+            INSERT INTO public.etl_watermarks (org_id, connector_key, entity, last_high_watermark,
+                last_run_at, mode)
+            SELECT w.org_id, w.connector_key, 'meta-ads-region', w.last_high_watermark, now(), 'incremental'
+            FROM public.etl_watermarks w
+            WHERE w.connector_key = 'meta_ads' AND w.entity = 'ads' AND w.last_high_watermark IS NOT NULL
+              AND 'meta_ads' = ANY(%(src)s)
+            ON CONFLICT (org_id, connector_key, entity) DO NOTHING
+            RETURNING org_id, entity, last_high_watermark
+            """
+            MISSING = """
+            SELECT oc.connector_name, req.entity, oc.organization_id FROM public.organization_connectors oc
+            JOIN public.organizations o ON o.id = oc.organization_id
+            JOIN (VALUES ('shopify', 'shopify-sales'), ('meta_ads', 'meta-ads'),
+                         ('meta_ads', 'meta-ads-region')) AS req(ck, entity) ON req.ck = oc.connector_name
+            WHERE oc.is_enabled AND o.is_active AND oc.connector_name = ANY(%(src)s)
+              AND NOT EXISTS (SELECT 1 FROM public.etl_watermarks w WHERE w.org_id = oc.organization_id
+                              AND w.connector_key = oc.connector_name AND w.entity = req.entity)
+            ORDER BY 1, 2, 3
+            """
+            with psycopg.connect(pg_conninfo(s.postgres)) as conn:
+                inserted = conn.execute(ADOPT, {'src': sources}).fetchall()
+                inserted += [(o, e + " (from ads)", m) for o, e, m in conn.execute(REGION_FALLBACK, {'src': sources}).fetchall()]
+                for org, entity, mark in sorted(inserted):
+                    print("adopted", org, entity, mark.isoformat() if mark else None, flush=True)
+                missing = conn.execute(MISSING, {'src': sources}).fetchall()
+                for source, entity, org in missing:
+                    print("NO v2 watermark, first run takes first_window:", source, entity, org, flush=True)
+                if dry:
+                    conn.rollback()
+                    print(f"DRY RUN ({sources}): {len(inserted)} rows would be adopted; rolled back", flush=True)
+                else:
+                    conn.commit()
+                    print(f"APPLIED ({sources}): {len(inserted)} rows adopted", flush=True)
+        envFrom:
+        - configMapRef:
+            name: etl-config
+        resources:
+          limits:
+            cpu: 1500m
+            memory: 4Gi
+          requests:
+            cpu: '1'
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - cloud-sql-proxy --structured-logs --port=5432 "$CLOUDSQL_INSTANCE" > /dev/null 2>&1 & P=$!;
+          python -c "$JOB_SCRIPT"; RC=$?; kill $P; exit $RC
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        cloud.google.com/gke-nodepool: wi-etl-pool
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: cloud-sql-proxy
+      terminationGracePeriodSeconds: 30

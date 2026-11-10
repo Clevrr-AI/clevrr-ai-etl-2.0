@@ -90,7 +90,8 @@ def load_account(conn: Connection[Any], graph: Graph, org: str, job: str, accoun
                  page_tokens: dict[str, str]) -> dict[str, Any]:  # fmt: skip
     rows = [r for page in insights(graph, account, *days, fields=raw.INSIGHT_FIELDS,
                                    level="ad", today=today,
-                                   extra={"use_account_attribution_setting": "true"})
+                                   extra={"use_account_attribution_setting": "true"},
+                                   async_fallback=True)  # legacy 653b6ff: ad level only
             for r in page]  # fmt: skip
     with conn.transaction():
         loaded = raw.load(conn, "raw_meta_ad_insights", raw.INSIGHT_COLUMNS,

@@ -83,14 +83,19 @@ def _idempotent(stmt: str) -> str | None:
         return stmt.replace("CREATE SEQUENCE ", "CREATE SEQUENCE IF NOT EXISTS ", 1)
     if re.match(r"^CREATE (UNIQUE )?INDEX ", stmt):
         return re.sub(r"^CREATE (UNIQUE )?INDEX ", r"CREATE \1INDEX IF NOT EXISTS ", stmt, count=1)
+    # A live table may lack a column the sandbox dump has (prod raw_google_ads_ad_group_ad has
+    # no `id`, 2026-11-10): what names such a column is skipped there (undefined_column), so
+    # 0002 still "changes nothing that exists".
     if "ADD CONSTRAINT" in stmt:
         if "FOREIGN KEY" in stmt:
             return None
         return (
             "DO $$ BEGIN\n" + stmt + ";\nEXCEPTION WHEN duplicate_object OR duplicate_table"
-            " OR invalid_table_definition THEN NULL;\nEND $$"
+            " OR invalid_table_definition OR undefined_column THEN NULL;\nEND $$"
         )
-    return stmt  # ALTER SEQUENCE OWNED BY, ALTER COLUMN SET DEFAULT: repeatable
+    if (stmt.startswith("ALTER SEQUENCE ") and " OWNED BY " in stmt) or " SET DEFAULT " in stmt:
+        return "DO $$ BEGIN\n" + stmt + ";\nEXCEPTION WHEN undefined_column THEN NULL;\nEND $$"
+    return stmt
 
 
 def generate(dump: str) -> str:

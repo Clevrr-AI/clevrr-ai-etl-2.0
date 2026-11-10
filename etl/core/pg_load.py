@@ -23,8 +23,21 @@ from typing import Any, LiteralString
 from psycopg import Connection, sql
 
 IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+_TIMESTAMPTZ: LiteralString = (
+    "SELECT data_type = 'timestamp with time zone' FROM information_schema.columns"
+    " WHERE table_schema = current_schema() AND table_name = %(t)s AND column_name = %(c)s"
+)
 SEPARATOR = "\n--;;\n"
 _STAGE = sql.Identifier("_etl_stage")
+
+
+def is_timestamptz(conn: Connection[Any], table: str, column: str) -> bool:
+    """Whether a target-schema column is `timestamp with time zone`. Prod's advertising.created_at
+    is, the sandbox's (legacy's dump) is not, and the two sit differently in ClickHouse."""
+    row = conn.execute(_TIMESTAMPTZ, {"t": table, "c": column}).fetchone()
+    if row is None:
+        raise ValueError(f"{table}.{column} does not exist in the target schema.")
+    return bool(row[0])
 
 
 def _ident(name: str) -> sql.Identifier:

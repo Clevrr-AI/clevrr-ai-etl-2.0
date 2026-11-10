@@ -278,7 +278,10 @@ CREATE SEQUENCE IF NOT EXISTS product_cost_history_id_seq
     NO MAXVALUE
     CACHE 1
 --;;
-ALTER SEQUENCE product_cost_history_id_seq OWNED BY product_cost_history.id
+DO $$ BEGIN
+ALTER SEQUENCE product_cost_history_id_seq OWNED BY product_cost_history.id;
+EXCEPTION WHEN undefined_column THEN NULL;
+END $$
 --;;
 CREATE TABLE IF NOT EXISTS product_variants (
     variant_id bigint NOT NULL,
@@ -397,7 +400,10 @@ CREATE SEQUENCE IF NOT EXISTS raw_google_ads_ad_group_ad_id_seq
     NO MAXVALUE
     CACHE 1
 --;;
-ALTER SEQUENCE raw_google_ads_ad_group_ad_id_seq OWNED BY raw_google_ads_ad_group_ad.id
+DO $$ BEGIN
+ALTER SEQUENCE raw_google_ads_ad_group_ad_id_seq OWNED BY raw_google_ads_ad_group_ad.id;
+EXCEPTION WHEN undefined_column THEN NULL;
+END $$
 --;;
 CREATE TABLE IF NOT EXISTS raw_google_ads_asset_group_product_perf (
     organization_id text,
@@ -954,152 +960,158 @@ CREATE TABLE IF NOT EXISTS shipments (
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
 )
 --;;
-ALTER TABLE ONLY product_cost_history ALTER COLUMN id SET DEFAULT nextval('product_cost_history_id_seq'::regclass)
+DO $$ BEGIN
+ALTER TABLE ONLY product_cost_history ALTER COLUMN id SET DEFAULT nextval('product_cost_history_id_seq'::regclass);
+EXCEPTION WHEN undefined_column THEN NULL;
+END $$
 --;;
-ALTER TABLE ONLY raw_google_ads_ad_group_ad ALTER COLUMN id SET DEFAULT nextval('raw_google_ads_ad_group_ad_id_seq'::regclass)
+DO $$ BEGIN
+ALTER TABLE ONLY raw_google_ads_ad_group_ad ALTER COLUMN id SET DEFAULT nextval('raw_google_ads_ad_group_ad_id_seq'::regclass);
+EXCEPTION WHEN undefined_column THEN NULL;
+END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY ad_product_mapping
     ADD CONSTRAINT ad_product_mapping_pkey PRIMARY KEY (organization_id, ad_id, product_id, source_type);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY advertising_geo_daily
     ADD CONSTRAINT advertising_geo_daily_pkey PRIMARY KEY (organization_id, source_type, created_at, campaign_id, state);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY advertising
     ADD CONSTRAINT advertising_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY google_ads_product_performance
     ADD CONSTRAINT google_ads_product_performance_pkey PRIMARY KEY (organization_id, report_date, campaign_id, entity_level, entity_id, product_item_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY order_click_attribution
     ADD CONSTRAINT order_click_attribution_pkey PRIMARY KEY (order_id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY order_lines
     ADD CONSTRAINT order_lines_pkey PRIMARY KEY (order_item_id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY orders
     ADD CONSTRAINT orders_pkey PRIMARY KEY (order_id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY product_cost_history
     ADD CONSTRAINT product_cost_history_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY product_variants
     ADD CONSTRAINT product_variants_pkey PRIMARY KEY (variant_id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY products
     ADD CONSTRAINT products_pkey PRIMARY KEY (product_id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_google_ads_ad_group_ad
     ADD CONSTRAINT raw_google_ads_ad_group_ad_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_google_ads_conversion_action
     ADD CONSTRAINT raw_google_ads_conversion_action_pkey PRIMARY KEY (resource_name);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_shipping_tracking
     ADD CONSTRAINT raw_shipping_tracking_pkey PRIMARY KEY (organization_id, waybill, source_type);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_shopify_collections
     ADD CONSTRAINT raw_shopify_collections_pkey PRIMARY KEY (organization_id, collection_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_shopify_collects
     ADD CONSTRAINT raw_shopify_collects_pkey PRIMARY KEY (organization_id, product_id, collection_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_shopify_order_lines
     ADD CONSTRAINT raw_shopify_order_lines_pkey PRIMARY KEY (id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_shopify_order_refund_lines
     ADD CONSTRAINT raw_shopify_order_refund_lines_pkey PRIMARY KEY (id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_shopify_orders
     ADD CONSTRAINT raw_shopify_orders_pkey PRIMARY KEY (id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_shopify_products
     ADD CONSTRAINT raw_shopify_products_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY raw_shopify_refunds
     ADD CONSTRAINT raw_shopify_refunds_pkey PRIMARY KEY (id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY refund_lines
     ADD CONSTRAINT refund_lines_pkey PRIMARY KEY (id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY refunds
     ADD CONSTRAINT refunds_pkey PRIMARY KEY (refund_id, organization_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY shipment_scans
     ADD CONSTRAINT shipment_scans_pkey PRIMARY KEY (organization_id, waybill, source_type, scan_datetime, status_code);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 DO $$ BEGIN
 ALTER TABLE ONLY shipments
     ADD CONSTRAINT shipments_pkey PRIMARY KEY (organization_id, waybill, source_type);
-EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition THEN NULL;
+EXCEPTION WHEN duplicate_object OR duplicate_table OR invalid_table_definition OR undefined_column THEN NULL;
 END $$
 --;;
 CREATE INDEX IF NOT EXISTS idx_adgeo_org_date ON advertising_geo_daily USING btree (organization_id, created_at)

@@ -10,7 +10,7 @@ late conversions; a backfill's --to stays exclusive. (Legacy: from the watermark
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, LiteralString
@@ -24,7 +24,7 @@ from etl.core import ch
 from etl.core.ch_writer import ChWriter, Slice
 from etl.core.logging import get_logger
 from etl.core.model import Mode, Org, Pipeline, RunContext, Step, StepFailed, StepResult, Window
-from etl.core.pg_load import run_sql_file
+from etl.core.pg_load import is_timestamptz, run_sql_file
 from etl.sources.google_ads import sql_google
 from etl.sources.google_ads.api import GoogleAds, refresh_token
 from etl.sources.google_ads.datasets import CLICK_COLUMNS
@@ -56,6 +56,17 @@ def _wall(moment: datetime) -> datetime:
 
 def _utc_naive(moment: datetime) -> datetime:
     return moment.astimezone(UTC).replace(tzinfo=None)
+
+
+def ch_clock(ctx: RunContext) -> Callable[[datetime], datetime]:
+    """How advertising.created_at sits in ClickHouse (UTC there on sandbox and prod), for the
+    delete and check bounds: the UTC instant when the Postgres column is timestamptz (prod: the
+    day at 00:00), the IST wall clock when it is a plain timestamp (sandbox: 05:30). Wall-clock
+    bounds on prod missed each window's first day: it was neither deleted nor counted, so a
+    re-run duplicated it (poetrique.com 7 Nov 2026, the cut-over pilot)."""
+    with ctx.pg.connection() as conn:
+        aware = is_timestamptz(conn, "advertising", "created_at")
+    return _utc_naive if aware else _wall
 
 
 def _rows(ctx: RunContext, query: LiteralString | sql.Composed,
@@ -124,9 +135,10 @@ def sync_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
     params = _params(ctx, org, window)
     writer = ChWriter(ctx.ch, ctx.settings.clickhouse)
     detail: dict[str, int] = {}
+    to_ch = ch_clock(ctx)
     plan = (
         ("advertising", sql_google.advertising_rows,
-         Slice(time_column="created_at", start=_wall(params["start"]), end=_wall(params["end"]),
+         Slice(time_column="created_at", start=to_ch(params["start"]), end=to_ch(params["end"]),
                source_column="source_type", source=sql_google.SOURCE)),
         ("ad_product_mapping", sql_google.mapping_rows,
          Slice(source_column="source_type", source=sql_google.SOURCE)),
@@ -145,7 +157,8 @@ def sync_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
 
 def check_google(ctx: RunContext, org: Org, window: Window) -> StepResult:
     params = _params(ctx, org, window)
-    wall = {"org": org.org_id, "start": _wall(params["start"]), "end": _wall(params["end"])}
+    to_ch = ch_clock(ctx)
+    wall = {"org": org.org_id, "start": to_ch(params["start"]), "end": to_ch(params["end"])}
     utc = {"org": org.org_id, "start": _utc_naive(params["start"]),
            "end": _utc_naive(params["end"])}  # fmt: skip
     detail = {

@@ -1,0 +1,168 @@
+# PROD cut-over step 00-inventory: Read-only: orgs per source, legacy and v2 watermarks, Alembic state, ClickHouse engines.
+# Apply: kubectl apply --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -f <this file>
+# Runbook: docs/prod-cutover.md. A Job runs once: delete it before applying it again.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-cutover-00-inventory
+  namespace: etl
+spec:
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: 'false'
+      labels:
+        job: etl-cutover-00-inventory
+    spec:
+      priorityClassName: etl-critical
+      containers:
+      - name: etl
+        image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CKH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: CH_PASS
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: PG_PASS
+        - name: ETL_COMMAND
+          value: none
+        - name: POSTGRES_HOST
+          value: 127.0.0.1
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: ORCHESTRA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: ORCHESTRA_API_TOKEN
+        - name: ORCHESTRA_CHANNEL_UID
+          value: HBO1jKzlVsv1hyuRJVl7
+        - name: ETL_JOB_NAME
+          value: etl-cutover-00-inventory
+        - name: CLOUDSQL_INSTANCE
+          value: clevrr-ai:asia-south1:clevrr-psql-db-prod
+        - name: ETL_V2_CUTOVER
+          value: 'true'
+        - name: CLICKHOUSE__CLUSTER
+          value: clevrr-cluster
+        - name: JOB_SCRIPT
+          value: |
+            """Prod cut-over inventory (read-only): the orgs each v2 tick would run, their legacy and v2
+            watermarks, the ETL's Alembic state, and the ClickHouse engines of the tables v2 writes."""
+
+            import os
+            import socket
+            import time
+
+            import psycopg
+
+            from etl import legacy
+            from etl.core.db import open_clickhouse, pg_conninfo
+            from etl.core.settings import load_settings
+
+            for _ in range(120):
+                try:
+                    socket.create_connection(("127.0.0.1", 5432), 1).close()
+                    break
+                except OSError:
+                    time.sleep(1)
+            os.environ.update(legacy.translate_env(os.environ))
+            s = load_settings()
+            SOURCES = ("shopify", "meta_ads", "google_ads")
+            PAIRS = (("shopify", "orders", "shopify-sales"), ("meta_ads", "ads", "meta-ads"),
+                     ("meta_ads", "ads_region", "meta-ads-region"), ("google_ads", "ads", "google-ads"))
+
+
+            def out(*parts):
+                print(*parts, flush=True)
+
+
+            with psycopg.connect(pg_conninfo(s.postgres)) as conn:
+                conn.read_only = True
+                out("== Postgres", s.postgres.db, "schema", s.postgres.target_schema)
+                for table in ("alembic_version_etl", "etl_schedules", "etl_watermarks", "etl_runs"):
+                    exists = conn.execute("SELECT to_regclass(%s) IS NOT NULL", ("public." + table,)).fetchone()
+                    out("table", table, "exists" if exists and exists[0] else "MISSING")
+                if conn.execute("SELECT to_regclass('public.alembic_version_etl')").fetchone()[0]:
+                    out("alembic_version_etl:", conn.execute(
+                        "SELECT version_num FROM public.alembic_version_etl").fetchall())
+                enabled = conn.execute(
+                    "SELECT oc.connector_name, oc.organization_id FROM public.organization_connectors oc"
+                    " JOIN public.organizations o ON o.id = oc.organization_id"
+                    " WHERE oc.is_enabled AND o.is_active AND oc.connector_name = ANY(%s)"
+                    " ORDER BY 1, 2", (list(SOURCES),)).fetchall()
+                marks = {(r[0], r[1], r[2]): (r[3], r[4]) for r in conn.execute(
+                    "SELECT org_id, connector_key, entity, last_high_watermark, last_run_at"
+                    " FROM public.etl_watermarks").fetchall()}
+                out("== enabled connectors (what the v2 ticks would run)")
+                for source in SOURCES:
+                    orgs = sorted({o for c, o in enabled if c == source})
+                    out(f"-- {source}: {len(orgs)} orgs")
+                    for org in orgs:
+                        cells = []
+                        for ck, old, new in PAIRS:
+                            if ck != source:
+                                continue
+                            lw = marks.get((org, ck, old), (None, None))
+                            nw = marks.get((org, ck, new), (None, None))
+                            cells.append(f"{old}={lw[0]:%Y-%m-%d %H:%M}" if lw[0] else f"{old}=none")
+                            cells.append(f"{new}={nw[0]:%Y-%m-%d %H:%M}" if nw[0] else f"{new}=none")
+                        out("  ", org, " ".join(cells))
+
+            ch = open_clickhouse(s.clickhouse)
+            out("== ClickHouse", s.clickhouse.database, "cluster", s.clickhouse.cluster)
+            names = ["advertising_shard", "ad_product_mapping_shard", "campaign_structure_shard",
+                     "advertising_geo_daily_shard", "orders_shard", "order_lines_shard", "refunds_shard",
+                     "refund_lines_shard", "order_click_attribution_shard", "order_mv_shard",
+                     "google_ads_product_performance_shard", "google_click_map_shard", "ch_migrations"]
+            rows = ch.query("SELECT name, engine FROM system.tables WHERE database = currentDatabase()"
+                            " AND name IN {n:Array(String)} ORDER BY name", parameters={"n": names}).result_rows
+            found = dict(rows)
+            for n in names:
+                out("  ", n, found.get(n, "MISSING"))
+            if s.clickhouse.cluster:
+              try:
+                per_replica = ch.query(
+                    "SELECT hostName() AS h, count() FROM clusterAllReplicas({c:String}, currentDatabase(),"
+                    " 'order_mv_shard') GROUP BY h ORDER BY h", parameters={"c": s.clickhouse.cluster},
+                ).result_rows
+                out("order_mv_shard rows per replica:", per_replica)
+              except Exception as exc:
+                out("order_mv_shard per replica: not readable as this user:", type(exc).__name__)
+            ch.close()
+            out("== inventory done (read-only)")
+        envFrom:
+        - configMapRef:
+            name: etl-config
+        resources:
+          limits:
+            cpu: 1500m
+            memory: 4Gi
+          requests:
+            cpu: '1'
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - cloud-sql-proxy --structured-logs --port=5432 "$CLOUDSQL_INSTANCE" > /dev/null 2>&1 & P=$!;
+          python -c "$JOB_SCRIPT"; RC=$?; kill $P; exit $RC
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        cloud.google.com/gke-nodepool: wi-etl-pool
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: cloud-sql-proxy
+      terminationGracePeriodSeconds: 30

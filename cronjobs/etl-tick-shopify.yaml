@@ -1,6 +1,6 @@
 # `etl tick shopify` every hour (:00 UTC = :30 IST): runs the shopify pipelines for the orgs whose
 # etl_schedules interval slot has started (docs/scheduling.md). Same ConfigMap, Secret, SA and
-# node pool as etl-all-shopify.yaml; activeDeadlineSeconds < 1 h so Forbid skips at most one tick.
+# node pool as etl-all-shopify.yaml, plus the v2 settings legacy's etl-config lacks (below).
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -12,7 +12,7 @@ spec:
   schedule: "0 * * * *"
   startingDeadlineSeconds: 600
   successfulJobsHistoryLimit: 1
-  suspend: true
+  suspend: true  # stays legacy until order_mv is replicated: docs/prod-cutover.md
   timeZone: UTC
   jobTemplate:
     metadata: {}
@@ -20,7 +20,9 @@ spec:
       # Release the Job (and its pods) 24h after it finishes so a finished run
       # can never keep holding CPU/memory requests against wi-etl-pool.
       ttlSecondsAfterFinished: 86400
-      activeDeadlineSeconds: 3500
+      # Legacy's 2 h: a long first run skips the next ticks (Forbid) instead of being
+      # killed half-way; an org it did not reach is still due at the next tick.
+      activeDeadlineSeconds: 7200
       backoffLimit: 0
       template:
         metadata:
@@ -34,7 +36,7 @@ spec:
           priorityClassName: etl-critical
           containers:
           - name: etl
-            image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:CHANGE-ME
+            image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110c
             imagePullPolicy: IfNotPresent
             env:
             - name: CKH_PASSWORD
@@ -49,6 +51,16 @@ spec:
                   key: PG_PASS
             - name: ETL_COMMAND
               value: "tick shopify"
+            # v2 settings, on the job (not in etl-config, which the legacy jobs share):
+            # legacy's image hard-codes the Cloud SQL instance, v2's starts the proxy only
+            # when it is set; the cut-over flag lets `etl legacy` write public / clevrr_db;
+            # the cluster makes deletes and DDL run ON CLUSTER on the _shard tables.
+            - name: CLOUDSQL_INSTANCE
+              value: "clevrr-ai:asia-south1:clevrr-psql-db-prod"
+            - name: ETL_V2_CUTOVER
+              value: "true"
+            - name: CLICKHOUSE__CLUSTER
+              value: "clevrr-cluster"
             - name: POSTGRES_HOST
               value: "127.0.0.1"
             - name: POSTGRES_PORT

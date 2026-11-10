@@ -1,0 +1,128 @@
+# PROD cut-over step 10-adopt-google: v2 watermarks for Google Ads, copied from legacy's (run right before the Google cut-over).
+# Apply: kubectl apply --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -f <this file>
+# Runbook: docs/prod-cutover.md. A Job runs once: delete it before applying it again.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-cutover-10-adopt-google
+  namespace: etl
+spec:
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: 'false'
+      labels:
+        job: etl-cutover-10-adopt-google
+    spec:
+      priorityClassName: etl-critical
+      containers:
+      - name: etl
+        image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CKH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: CH_PASS
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: PG_PASS
+        - name: ETL_COMMAND
+          value: none
+        - name: POSTGRES_HOST
+          value: 127.0.0.1
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: ORCHESTRA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: ORCHESTRA_API_TOKEN
+        - name: ORCHESTRA_CHANNEL_UID
+          value: HBO1jKzlVsv1hyuRJVl7
+        - name: ETL_JOB_NAME
+          value: etl-cutover-10-adopt-google
+        - name: CLOUDSQL_INSTANCE
+          value: clevrr-ai:asia-south1:clevrr-psql-db-prod
+        - name: ETL_V2_CUTOVER
+          value: 'true'
+        - name: CLICKHOUSE__CLUSTER
+          value: clevrr-cluster
+        - name: DRY_RUN
+          value: 'false'
+        - name: ADOPT_SOURCES
+          value: google_ads
+        - name: JOB_SCRIPT
+          value: "\"\"\"Give every org v2 watermarks from legacy's (cronjobs_dev/README.md): orders ->\
+            \ shopify-sales,\nads -> meta-ads, ads_region -> meta-ads-region, ads (google) -> google-ads.\
+            \ Existing v2 rows are\nkept (ON CONFLICT DO NOTHING). last_run_at = now(), so a daily org's\
+            \ first v2 run is the next\n00:30 IST tick, not the first tick after the cut-over. An org\
+            \ with no legacy ads_region row\ntakes its ads watermark for meta-ads-region too (else the\
+            \ region feed's first run is a year).\nDRY_RUN=true rolls the inserts back.\"\"\"\n\nimport\
+            \ os\nimport socket\nimport time\n\nimport psycopg\n\nfrom etl import legacy\nfrom etl.core.db\
+            \ import pg_conninfo\nfrom etl.core.settings import load_settings\n\nfor _ in range(120):\n\
+            \    try:\n        socket.create_connection((\"127.0.0.1\", 5432), 1).close()\n        break\n\
+            \    except OSError:\n        time.sleep(1)\nos.environ.update(legacy.translate_env(os.environ))\n\
+            s = load_settings()\ndry = os.environ.get(\"DRY_RUN\", \"true\").lower() in (\"1\", \"true\"\
+            , \"yes\")\nsources = os.environ.get(\"ADOPT_SOURCES\", \"shopify meta_ads google_ads\").split()\n\
+            ADOPT = \"\"\"\nINSERT INTO public.etl_watermarks (org_id, connector_key, entity, last_high_watermark,\n\
+            \    last_run_at, mode)\nSELECT w.org_id, w.connector_key, v.entity, w.last_high_watermark,\
+            \ now(), 'incremental'\nFROM public.etl_watermarks w\nJOIN (VALUES ('shopify', 'orders', 'shopify-sales'),\
+            \ ('meta_ads', 'ads', 'meta-ads'),\n             ('meta_ads', 'ads_region', 'meta-ads-region'),\n\
+            \             ('google_ads', 'ads', 'google-ads')) AS v(ck, legacy_entity, entity)\n  ON v.ck\
+            \ = w.connector_key AND v.legacy_entity = w.entity\nWHERE w.last_high_watermark IS NOT NULL\
+            \ AND w.connector_key = ANY(%(src)s)\nON CONFLICT (org_id, connector_key, entity) DO NOTHING\n\
+            RETURNING org_id, entity, last_high_watermark\n\"\"\"\nREGION_FALLBACK = \"\"\"\nINSERT INTO\
+            \ public.etl_watermarks (org_id, connector_key, entity, last_high_watermark,\n    last_run_at,\
+            \ mode)\nSELECT w.org_id, w.connector_key, 'meta-ads-region', w.last_high_watermark, now(),\
+            \ 'incremental'\nFROM public.etl_watermarks w\nWHERE w.connector_key = 'meta_ads' AND w.entity\
+            \ = 'ads' AND w.last_high_watermark IS NOT NULL\n  AND 'meta_ads' = ANY(%(src)s)\nON CONFLICT\
+            \ (org_id, connector_key, entity) DO NOTHING\nRETURNING org_id, entity, last_high_watermark\n\
+            \"\"\"\nMISSING = \"\"\"\nSELECT oc.connector_name, req.entity, oc.organization_id FROM public.organization_connectors\
+            \ oc\nJOIN public.organizations o ON o.id = oc.organization_id\nJOIN (VALUES ('shopify', 'shopify-sales'),\
+            \ ('meta_ads', 'meta-ads'),\n             ('meta_ads', 'meta-ads-region')) AS req(ck, entity)\
+            \ ON req.ck = oc.connector_name\nWHERE oc.is_enabled AND o.is_active AND oc.connector_name\
+            \ = ANY(%(src)s)\n  AND NOT EXISTS (SELECT 1 FROM public.etl_watermarks w WHERE w.org_id =\
+            \ oc.organization_id\n                  AND w.connector_key = oc.connector_name AND w.entity\
+            \ = req.entity)\nORDER BY 1, 2, 3\n\"\"\"\nwith psycopg.connect(pg_conninfo(s.postgres)) as\
+            \ conn:\n    inserted = conn.execute(ADOPT, {'src': sources}).fetchall()\n    inserted +=\
+            \ [(o, e + \" (from ads)\", m) for o, e, m in conn.execute(REGION_FALLBACK, {'src': sources}).fetchall()]\n\
+            \    for org, entity, mark in sorted(inserted):\n        print(\"adopted\", org, entity, mark.isoformat()\
+            \ if mark else None, flush=True)\n    missing = conn.execute(MISSING, {'src': sources}).fetchall()\n\
+            \    for source, entity, org in missing:\n        print(\"NO v2 watermark, first run takes\
+            \ first_window:\", source, entity, org, flush=True)\n    if dry:\n        conn.rollback()\n\
+            \        print(f\"DRY RUN ({sources}): {len(inserted)} rows would be adopted; rolled back\"\
+            , flush=True)\n    else:\n        conn.commit()\n        print(f\"APPLIED ({sources}): {len(inserted)}\
+            \ rows adopted\", flush=True)\n"
+        envFrom:
+        - configMapRef:
+            name: etl-config
+        resources:
+          limits:
+            cpu: 1500m
+            memory: 4Gi
+          requests:
+            cpu: '1'
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - cloud-sql-proxy --structured-logs --port=5432 "$CLOUDSQL_INSTANCE" > /dev/null 2>&1 & P=$!;
+          python -c "$JOB_SCRIPT"; RC=$?; kill $P; exit $RC
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        cloud.google.com/gke-nodepool: wi-etl-pool
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: cloud-sql-proxy
+      terminationGracePeriodSeconds: 30

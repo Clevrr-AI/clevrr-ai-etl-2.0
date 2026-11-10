@@ -1,0 +1,154 @@
+# PROD cut-over step 05-check-meta-async: Read-only: yesterday's ad-level Meta insights, synchronous vs async report, for blissclub.in and the pilot org (writes nothing).
+# Apply: kubectl apply --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -f <this file>
+# Runbook: docs/prod-cutover.md. A Job runs once: delete it before applying it again.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-cutover-05-check-meta-async
+  namespace: etl
+spec:
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 3000
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: 'false'
+      labels:
+        job: etl-cutover-05-check-meta-async
+    spec:
+      priorityClassName: etl-critical
+      containers:
+      - name: etl
+        image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CKH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: CH_PASS
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: PG_PASS
+        - name: ETL_COMMAND
+          value: none
+        - name: POSTGRES_HOST
+          value: 127.0.0.1
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: ORCHESTRA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: etl-secrets
+              key: ORCHESTRA_API_TOKEN
+        - name: ORCHESTRA_CHANNEL_UID
+          value: HBO1jKzlVsv1hyuRJVl7
+        - name: ETL_JOB_NAME
+          value: etl-cutover-05-check-meta-async
+        - name: CLOUDSQL_INSTANCE
+          value: clevrr-ai:asia-south1:clevrr-psql-db-prod
+        - name: ETL_V2_CUTOVER
+          value: 'true'
+        - name: CLICKHOUSE__CLUSTER
+          value: clevrr-cluster
+        - name: ORGS
+          value: blissclub.in poetrique.com
+        - name: JOB_SCRIPT
+          value: |
+            """Sandbox live check: yesterday's ad-level insights, synchronous vs async report, per account.
+            Reads the connector's token from organization_connectors; writes nothing."""
+
+            import json
+            import os
+            import socket
+            import time
+            from datetime import datetime, timedelta
+            from zoneinfo import ZoneInfo
+
+            import httpx
+
+            from etl import legacy
+            from etl.core.connector_table import TableConnectorSource
+            from etl.core.db import open_pg_pool
+            from etl.core.settings import load_settings
+            from etl.sources.meta import graph as g
+            from etl.sources.meta.fetch import accounts
+            from etl.sources.meta.raw import INSIGHT_FIELDS
+
+            for _ in range(120):
+                try:
+                    socket.create_connection(("127.0.0.1", 5432), 1).close()
+                    break
+                except OSError:
+                    time.sleep(1)
+            os.environ.update(legacy.translate_env(os.environ))
+            settings = load_settings()
+            pool = open_pg_pool(settings.postgres)
+            wanted = [w.strip() for w in os.environ["ORGS"].split(" ") if w.strip()]
+            found = {o.org_id: o for o in TableConnectorSource(pool).orgs("meta_ads")}
+            day = datetime.now(ZoneInfo("Asia/Kolkata")).date() - timedelta(days=1)
+            extra = {"use_account_attribution_setting": "true"}
+
+
+            def summary(rows):
+                keys = {(r.get("ad_id"), r.get("date_start")) for r in rows}
+                spend = round(sum(float(r.get("spend") or 0) for r in rows), 2)
+                impressions = sum(int(r.get("impressions") or 0) for r in rows)
+                return {"rows": len(rows), "unique_ad_days": len(keys), "spend": spend,
+                        "impressions": impressions}
+
+
+            def attempt(fn):
+                t = time.monotonic()
+                try:
+                    return summary(fn()), round(time.monotonic() - t, 1)
+                except g.ReduceDataError:
+                    return "REFUSED: reduce the amount of data", round(time.monotonic() - t, 1)
+                except Exception as exc:
+                    return f"ERROR {type(exc).__name__}: {str(exc)[:120]}", round(time.monotonic() - t, 1)
+
+
+            with httpx.Client(timeout=httpx.Timeout(120.0, connect=15.0)) as http:
+                for want in wanted:
+                    org = found.get(want)
+                    if org is None:
+                        print(json.dumps({"check": "meta_async_vs_sync", "org": want, "skip": "no enabled connector"}), flush=True)
+                        continue
+                    graph = g.Graph("https://graph.facebook.com/v24.0", str(org.credentials.get("access_token")), http)
+                    for account in accounts(org.credentials):
+                        end = day + timedelta(days=1)
+                        a, ta = attempt(lambda: g._rows(graph, account, day, end, INSIGHT_FIELDS, "ad", extra, False))
+                        b, tb = attempt(lambda: g._range_async(graph, account, day, end, INSIGHT_FIELDS, "ad", extra))
+                        print(json.dumps({"check": "meta_async_vs_sync", "org": want, "account": account,
+                                          "day": day.isoformat(), "sync": a, "async": b, "match": a == b,
+                                          "sync_s": ta, "async_s": tb}), flush=True)
+            pool.close()
+        envFrom:
+        - configMapRef:
+            name: etl-config
+        resources:
+          limits:
+            cpu: 1500m
+            memory: 4Gi
+          requests:
+            cpu: '1'
+            memory: 2Gi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - cloud-sql-proxy --structured-logs --port=5432 "$CLOUDSQL_INSTANCE" > /dev/null 2>&1 & P=$!;
+          python -c "$JOB_SCRIPT"; RC=$?; kill $P; exit $RC
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        cloud.google.com/gke-nodepool: wi-etl-pool
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccountName: cloud-sql-proxy
+      terminationGracePeriodSeconds: 30
