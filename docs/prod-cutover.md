@@ -146,22 +146,26 @@ kubectl patch cronjob etl-all-meta-ads -n etl --context=gke_clevrr-ai_asia-south
 
 ## Shopify
 
-1. ClickHouse admin, inside one ClickHouse pod (the default user there is the admin). Print the
-   current Distributed definitions first and keep them (a rollback recreates them), then run
-   the fix:
+1. ClickHouse admin, inside one ClickHouse pod (the default user there is the admin). First the
+   read-only check: both column lists must be `[]` (a column the new table has and prod lacks
+   fails the copy after the old table is renamed; a column prod has and the new table lacks is
+   dropped). Then print the current Distributed definitions and keep them (a rollback recreates
+   them). Then the fix, then the read-only verify:
 
 ```
+Get-Content -Raw C:\Users\HP\clevrr\clevrr-ai-etl-2.0\cronjobs\cutover\ch-order-tables-check.sql | kubectl exec -i chi-clevrr-ch-clevrr-cluster-0-0-0 -n clickhouse --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -- clickhouse-client --multiquery
 kubectl exec chi-clevrr-ch-clevrr-cluster-0-0-0 -n clickhouse --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -- clickhouse-client --query "SHOW CREATE TABLE clevrr_db.order_mv FORMAT TSVRaw"
 kubectl exec chi-clevrr-ch-clevrr-cluster-0-0-0 -n clickhouse --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -- clickhouse-client --query "SHOW CREATE TABLE clevrr_db.order_click_attribution FORMAT TSVRaw"
 Get-Content -Raw C:\Users\HP\clevrr\clevrr-ai-etl-2.0\cronjobs\cutover\ch-order-tables-fix.sql | kubectl exec -i chi-clevrr-ch-clevrr-cluster-0-0-0 -n clickhouse --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -- clickhouse-client --multiquery
+Get-Content -Raw C:\Users\HP\clevrr\clevrr-ai-etl-2.0\cronjobs\cutover\ch-order-tables-verify.sql | kubectl exec -i chi-clevrr-ch-clevrr-cluster-0-0-0 -n clickhouse --context=gke_clevrr-ai_asia-south1_clevrr-ckh-cluster-prod -- clickhouse-client --multiquery
 ```
 
    12 statements; `order_mv` is missing for the seconds between its DROP and CREATE, so run it
-   outside 00:15-02:00 IST. After it, `00-inventory.yaml` must show `order_mv_shard
-   ReplicatedReplacingMergeTree`. The old rows stay in `*_shard_legacy`.
+   outside 00:15-02:00 IST. The verify must show both `*_shard` tables `Replicated...` and each
+   "new" count equal to its "old, distinct" count. The old rows stay in `*_shard_legacy`.
 2. `09-adopt-shopify.yaml`, then `06-pilot-shopify.yaml` (poetrique.com): `etl.run_succeeded`.
-3. Cut-over: suspend `etl-all-shopify` (patch with suspend.json), set `suspend: false` in
-   `cronjobs/etl-tick-shopify.yaml` and apply it.
+3. Cut-over: suspend `etl-all-shopify` (patch with suspend.json) and apply
+   `cronjobs/etl-tick-shopify.yaml` (`suspend: false` since 2026-11-10).
 
 ## Google Ads
 
@@ -170,8 +174,8 @@ v2 Google has never run live. The tick reads the OAuth client from `etl-config`'
 if its ON CONFLICT finds no matching unique index on prod, that dataset is skipped and logged.
 
 1. `10-adopt-google.yaml`, then `11-pilot-google.yaml` (thedeconstruct.in): `etl.run_succeeded`.
-2. Cut-over: suspend `etl-all-google-ads`, set `suspend: false` in
-   `cronjobs/etl-tick-google-ads.yaml` and apply it.
+2. Cut-over: suspend `etl-all-google-ads` and apply `cronjobs/etl-tick-google-ads.yaml`
+   (`suspend: false` since 2026-11-10).
 
 Rollback for either: suspend its tick, unsuspend its `etl-all-*` job (suspend.json / unsuspend.json).
 

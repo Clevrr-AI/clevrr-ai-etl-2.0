@@ -8,12 +8,13 @@ Pipe it to kubectl:
     uv run python scripts/manual_job.py "schedule list" --prod | kubectl apply -f - <prod context>
 
 The image defaults to the one in the template; pass --image for another tag.
-The Job name is etl-manual-<utc time>, so repeated runs never collide.
+The Job name is etl-manual-<utc time>-<4 hex>, so repeated runs never collide.
 """
 
 from __future__ import annotations
 
 import argparse
+import secrets
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image", help="the v2 image to run (default: the template's)")
     parser.add_argument("--prod", action="store_true", help="the prod template")
     args = parser.parse_args(argv)
-    suffix = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    suffix = f"{datetime.now(UTC):%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
     sys.stdout.write(render(args.command, args.image, suffix, prod=args.prod))
     return 0
 

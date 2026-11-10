@@ -36,7 +36,7 @@ spec:
           priorityClassName: etl-critical
           containers:
           - name: etl
-            image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110c
+            image: asia-south1-docker.pkg.dev/clevrr-ai/clevrr-registry/clevrr-etl-v2:cutover-20261110d
             imagePullPolicy: IfNotPresent
             env:
             - name: CKH_PASSWORD

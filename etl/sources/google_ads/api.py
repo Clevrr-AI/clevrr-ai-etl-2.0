@@ -37,6 +37,11 @@ RETRY_MAX = 6
 RETRY_BASE = 1.6
 MAX_CHILD_ACCOUNTS = 25
 MAX_PENDING_JSON = 64 * 1024 * 1024
+# Legacy STREAM_READ_CHUNK: raw_decode re-scans the partly received container on every read,
+# so small reads make a big response quadratic (legacy measured a 62 MB body: 64 KB reads
+# 957 attempts / 8.4 s, 1 MB reads 69 / 0.7 s). httpx without a size yields network-sized
+# pieces: the prod pilot (thedeconstruct.in, 2026-11-10) sat at 100 % CPU for 12+ minutes.
+STREAM_READ_CHUNK = 1024 * 1024
 _USER_ACCESS_403_MARKERS = ("USER_PERMISSION_DENIED", "CUSTOMER_NOT_ENABLED", "NOT_ADS_USER")
 
 
@@ -131,7 +136,7 @@ class GoogleAds:
             if response.status_code >= 400:
                 body = response.read().decode("utf-8", "replace")
                 raise _HttpFailure(response.status_code, body)
-            return list(parse_stream(response.iter_bytes()))
+            return list(parse_stream(response.iter_bytes(chunk_size=STREAM_READ_CHUNK)))
 
     def search(self, cid: str, query: str, login: str | None = None) -> list[dict[str, Any]]:
         """All rows of a GAQL query; a retry re-reads the stream from the start (legacy)."""
